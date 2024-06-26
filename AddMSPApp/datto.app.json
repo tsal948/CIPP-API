@@ -19,8 +19,8 @@
   "detectionRules": [
     {
       "@odata.type": "#microsoft.graph.win32LobAppFileSystemDetection",
-      "path": "%programdata%\\CentraStage\\AEMAgent",
-      "fileOrFolderName": "AEMAgent.exe",
+      "path": "%programfiles(x86)%\\CentraStage",
+      "fileOrFolderName": "CagService.exe.config",
       "check32BitOn64System": false,
       "detectionType": "exists"
     }
@@ -60,5 +60,6 @@
     "v10_1607": true
   },
   "notes": "CIPP Uploaded application",
-  "minimumMemoryInMB": "1"
+  "minimumMemoryInMB": "1",
+  "setupFilePath": "install.ps1"
 }
