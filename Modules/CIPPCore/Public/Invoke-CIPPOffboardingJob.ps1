@@ -1,4 +1,4 @@
- 
+
 function Invoke-CIPPOffboardingJob {
     [CmdletBinding()]
     param (
@@ -12,19 +12,19 @@ function Invoke-CIPPOffboardingJob {
     if ($Options -is [string]) {
         $Options = $Options | ConvertFrom-Json
     }
-    $userid = (New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users/$($username)" -tenantid $Tenantfilter).id
+    $userid = (New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users/$($username)?`$select=id" -tenantid $Tenantfilter).id
     Write-Host "Running offboarding job for $username with options: $($Options | ConvertTo-Json -Depth 10)"
     $Return = switch ($Options) {
         { $_.'ConvertToShared' -eq 'true' } {
             Set-CIPPMailboxType -ExecutingUser $ExecutingUser -tenantFilter $tenantFilter -userid $username -username $username -MailboxType 'Shared' -APIName $APIName
         }
-        { $_.RevokeSessions -eq 'true' } { 
+        { $_.RevokeSessions -eq 'true' } {
             Revoke-CIPPSessions -tenantFilter $tenantFilter -username $username -userid $userid -ExecutingUser $ExecutingUser -APIName $APIName
         }
-        { $_.ResetPass -eq 'true' } { 
+        { $_.ResetPass -eq 'true' } {
             Set-CIPPResetPassword -tenantFilter $tenantFilter -userid $username -ExecutingUser $ExecutingUser -APIName $APIName
         }
-        { $_.RemoveGroups -eq 'true' } { 
+        { $_.RemoveGroups -eq 'true' } {
             Remove-CIPPGroups -userid $userid -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName -Username "$Username"
         }
 
@@ -35,25 +35,30 @@ function Invoke-CIPPOffboardingJob {
             Set-CIPPSignInState -TenantFilter $tenantFilter -userid $username -AccountEnabled $false -ExecutingUser $ExecutingUser -APIName $APIName
         }
 
-        { $_.'OnedriveAccess' -ne '' } { 
+        { $_.'OnedriveAccess' -ne '' } {
             $Options.OnedriveAccess | ForEach-Object { Set-CIPPSharePointPerms -tenantFilter $tenantFilter -userid $username -OnedriveAccessUser $_.value -ExecutingUser $ExecutingUser -APIName $APIName }
         }
 
-        { $_.'AccessNoAutomap' -ne '' } { 
+        { $_.'AccessNoAutomap' -ne '' } {
             $Options.AccessNoAutomap | ForEach-Object { Set-CIPPMailboxAccess -tenantFilter $tenantFilter -userid $username -AccessUser $_.value -Automap $false -AccessRights @('FullAccess') -ExecutingUser $ExecutingUser -APIName $APIName }
         }
-        { $_.'AccessAutomap' -ne '' } { 
+        { $_.'AccessAutomap' -ne '' } {
             $Options.AccessAutomap | ForEach-Object { Set-CIPPMailboxAccess -tenantFilter $tenantFilter -userid $username -AccessUser $_.value -Automap $true -AccessRights @('FullAccess') -ExecutingUser $ExecutingUser -APIName $APIName }
         }
-    
-        { $_.'OOO' -ne '' } { 
+
+        { $_.'OOO' -ne '' } {
             Set-CIPPOutOfOffice -tenantFilter $tenantFilter -userid $username -InternalMessage $Options.OOO -ExternalMessage $Options.OOO -ExecutingUser $ExecutingUser -APIName $APIName -state 'Enabled'
         }
-        { $_.'forward' -ne '' } { 
-            Set-CIPPForwarding -userid $userid -username $username -tenantFilter $Tenantfilter -Forward $Options.forward -KeepCopy [bool]$Options.keepCopy -ExecutingUser $ExecutingUser -APIName $APIName
+        { $_.'forward' -ne '' } {
+            if (!$Options.keepCopy) {
+                Set-CIPPForwarding -userid $userid -username $username -tenantFilter $Tenantfilter -Forward $Options.forward -ExecutingUser $ExecutingUser -APIName $APIName
+            } else {
+                $KeepCopy = [boolean]$Options.keepCopy
+                Set-CIPPForwarding -userid $userid -username $username -tenantFilter $Tenantfilter -Forward $Options.forward -KeepCopy $KeepCopy -ExecutingUser $ExecutingUser -APIName $APIName
+            }
         }
         { $_.'RemoveLicenses' -eq 'true' } {
-            Remove-CIPPLicense -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName
+            Remove-CIPPLicense -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName -Schedule
         }
 
         { $_.'Deleteuser' -eq 'true' } {
@@ -62,27 +67,40 @@ function Invoke-CIPPOffboardingJob {
 
         { $_.'removeRules' -eq 'true' } {
             Write-Host "Removing rules for $username"
-            Remove-CIPPRules -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName
+            Remove-CIPPMailboxRule -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName -RemoveAllRules
         }
 
         { $_.'removeMobile' -eq 'true' } {
             Remove-CIPPMobileDevice -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName
+        }
+        { $_.'removeCalendarInvites' -eq 'true' } {
+            Remove-CIPPCalendarInvites -userid $userid -username $Username -tenantFilter $Tenantfilter -ExecutingUser $ExecutingUser -APIName $APIName
         }
         { $_.'removePermissions' } {
             if ($RunScheduled) {
                 Remove-CIPPMailboxPermissions -PermissionsLevel @('FullAccess', 'SendAs', 'SendOnBehalf') -userid 'AllUsers' -AccessUser $UserName -TenantFilter $TenantFilter -APIName $APINAME -ExecutingUser $ExecutingUser
 
             } else {
-                $object = [PSCustomObject]@{
-                    TenantFilter  = $tenantFilter
-                    User          = $username
-                    executingUser = $ExecutingUser
+                $Queue = New-CippQueueEntry -Name "Offboarding - Mailbox Permissions: $Username" -TotalTasks 1
+                $InputObject = [PSCustomObject]@{
+                    Batch            = @(
+                        [PSCustomObject]@{
+                            'FunctionName'  = 'ExecOffboardingMailboxPermissions'
+                            'TenantFilter'  = $TenantFilter
+                            'User'          = $Username
+                            'ExecutingUser' = $ExecutingUser
+                            'APINAME'       = $APINAME
+                            'QueueId'       = $Queue.RowKey
+                        }
+                    )
+                    OrchestratorName = "OffboardingMailboxPermissions_$Username"
+                    SkipLog          = $true
                 }
-                Push-OutputBinding -Name offboardingmailbox -Value $object
+                $null = Start-NewOrchestration -FunctionName CIPPOrchestrator -InputObject ($InputObject | ConvertTo-Json -Depth 10)
                 "Removal of permissions queued. This task will run in the background and send it's results to the logbook."
             }
         }
-    
+
     }
     return $Return
 

@@ -20,7 +20,7 @@ function Push-DomainAnalyserTenant {
         return
     } else {
         try {
-            $Domains = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/domains' -tenantid $Tenant.customerId | Where-Object { ($_.id -notlike '*.microsoftonline.com' -and $_.id -NotLike '*.exclaimer.cloud' -and $_.id -Notlike '*.excl.cloud' -and $_.id -NotLike '*.codetwo.online' -and $_.id -NotLike '*.call2teams.com' -and $_.isVerified) }
+            $Domains = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/domains' -tenantid $Tenant.customerId | Where-Object { ($_.id -notlike '*.microsoftonline.com' -and $_.id -NotLike '*.exclaimer.cloud' -and $_.id -Notlike '*.excl.cloud' -and $_.id -NotLike '*.codetwo.online' -and $_.id -NotLike '*.call2teams.com' -and $_.id -notlike '*signature365.net' -and $_.isVerified) }
 
             $TenantDomains = foreach ($d in $Domains) {
                 [PSCustomObject]@{
@@ -99,7 +99,7 @@ function Push-DomainAnalyserTenant {
                         Write-Host "Started analysis for $DomainCount tenant domains in $($Tenant.defaultDomainName)"
                         Write-LogMessage -API 'DomainAnalyser' -tenant $Tenant.defaultDomainName -message "Started analysis for $DomainCount tenant domains" -sev Info
                     } catch {
-                        Write-LogMessage -API 'DomainAnalyser' -message 'Domain Analyser GetTenantDomains error' -sev info -LogData (Get-CippException -Exception $_)
+                        Write-LogMessage -API 'DomainAnalyser' -message 'Domain Analyser GetTenantDomains error' -sev 'Error' -LogData (Get-CippException -Exception $_)
                     }
                 } catch {
                     Write-LogMessage -API 'DomainAnalyser' -message 'GetTenantDomains loop error' -sev 'Error' -LogData (Get-CippException -Exception $_)
