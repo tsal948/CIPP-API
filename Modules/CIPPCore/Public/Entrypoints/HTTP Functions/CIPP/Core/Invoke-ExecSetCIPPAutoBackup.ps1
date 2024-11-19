@@ -17,16 +17,16 @@ Function Invoke-ExecSetCIPPAutoBackup {
             RowKey       = $AutomatedCIPPBackupTask.RowKey
             PartitionKey = 'ScheduledTask'
         }
-        Remove-AzDataTableEntity @Table -Entity $task | Out-Null
+        Remove-AzDataTableEntity -Force @Table -Entity $task | Out-Null
 
-        $TaskBody = @{
+        $TaskBody = [pscustomobject]@{
             TenantFilter  = 'AllTenants'
             Name          = 'Automated CIPP Backup'
             Command       = @{
                 value = 'New-CIPPBackup'
                 label = 'New-CIPPBackup'
             }
-            Parameters    = @{ backupType = 'CIPP' }
+            Parameters    = [pscustomobject]@{ backupType = 'CIPP' }
             ScheduledTime = $unixtime
             Recurrence    = '1d'
         }

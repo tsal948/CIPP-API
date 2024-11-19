@@ -51,7 +51,7 @@ function Invoke-ExecDurableFunctions {
             if ($Request.Query.PartitionKey) {
                 $HistoryTable = Get-CippTable -TableName ('{0}History' -f $FunctionName)
                 $Filter = "PartitionKey eq '{0}'" -f $Request.Query.PartitionKey
-                $History = Get-CippAzDataTableEntity @HistoryTable -Filter $Filter -Property RowKey, Timestamp, EventType, Name, IsPlayed, OrchestrationStatus | Select-Object * -ExcludeProperty ETag
+                $History = Get-CippAzDataTableEntity @HistoryTable -Filter $Filter -Property PartitionKey, RowKey, Timestamp, EventType, Name, IsPlayed, OrchestrationStatus | Select-Object * -ExcludeProperty ETag
 
                 $Body = [PSCustomObject]@{
                     Results = @($History)
@@ -142,11 +142,11 @@ function Invoke-ExecDurableFunctions {
             if ($Request.Query.PartitionKey) {
                 $HistoryEntities = Get-CIPPAzDataTableEntity @HistoryTable -Filter "PartitionKey eq '$($Request.Query.PartitionKey)'" -Property RowKey, PartitionKey
                 if ($HistoryEntities) {
-                    Remove-AzDataTableEntity @HistoryTable -Entity $HistoryEntities
+                    Remove-AzDataTableEntity -Force @HistoryTable -Entity $HistoryEntities
                 }
                 $Instance = Get-CIPPAzDataTableEntity @InstancesTable -Filter "PartitionKey eq '$($Request.Query.PartitionKey)'" -Property RowKey, PartitionKey
                 if ($Instance) {
-                    Remove-AzDataTableEntity @InstancesTable -Entity $Instance
+                    Remove-AzDataTableEntity -Force @InstancesTable -Entity $Instance
                 }
                 $Body = [PSCustomObject]@{
                     Results = 'Orchestrator {0} purged successfully' -f $Request.Query.PartitionKey
