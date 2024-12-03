@@ -11,7 +11,7 @@ function Remove-CIPPMailboxPermissions {
 
     try {
         if ($userid -eq 'AllUsers') {
-            $Mailboxes = New-ExoRequest -tenantid $TenantFilter -cmdlet 'get-mailbox'
+            $Mailboxes = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-Mailbox' -Select UserPrincipalName
             $Mailboxes | ForEach-Object -Parallel {
                 Import-Module '.\Modules\AzBobbyTables'
                 Import-Module '.\Modules\CIPPCore'
@@ -25,7 +25,7 @@ function Remove-CIPPMailboxPermissions {
                         $MailboxPerms = New-ExoRequest -Anchor $UserId -tenantid $Tenantfilter -cmdlet 'Set-Mailbox' -cmdParams @{Identity = $userid; GrantSendonBehalfTo = @{'@odata.type' = '#Exchange.GenericHashTable'; remove = $AccessUser }; }
                         if ($MailboxPerms -notlike '*completed successfully but no settings of*') {
                             Write-LogMessage -user $ExecutingUser -API $APIName -message "Removed SendOnBehalf permissions for $($AccessUser) from $($userid)'s mailbox." -Sev 'Info' -tenant $TenantFilter
-                            "Removed SendOnBehalf permissions for $($AccessUser) from $($userid)'s mailbox." 
+                            "Removed SendOnBehalf permissions for $($AccessUser) from $($userid)'s mailbox."
                         }
                     }
                     'SendAS' {
@@ -36,7 +36,19 @@ function Remove-CIPPMailboxPermissions {
                         }
                     }
                     'FullAccess' {
-                        $permissions = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Remove-MailboxPermission' -cmdParams @{Identity = $userid; user = $AccessUser; accessRights = @('FullAccess') } -Anchor $userid
+                        $ExoRequest = @{
+                            tenantid  = $TenantFilter
+                            cmdlet    = 'Remove-MailboxPermission'
+                            cmdParams = @{
+                                Identity     = $userid
+                                user         = $AccessUser
+                                accessRights = @('FullAccess')
+                                Verbose      = $true
+                            }
+                            Anchor    = $userid
+                        }
+                        New-ExoRequest @ExoRequest
+
                         if ($permissions -notlike "*because the ACE doesn't exist on the object.*") {
                             Write-LogMessage -user $ExecutingUser -API $APIName -message "Removed FullAccess permissions for $($AccessUser) from $($userid)'s mailbox." -Sev 'Info' -tenant $TenantFilter
                             "Removed FullAccess permissions for $($AccessUser) from $($userid)'s mailbox."
@@ -47,7 +59,8 @@ function Remove-CIPPMailboxPermissions {
         }
         return $Results
     } catch {
-        Write-LogMessage -user $ExecutingUser -API $APIName -message "Could not remove mailbox permissions for $($userid). Error: $($_.Exception.Message)" -Sev 'Error' -tenant $TenantFilter
-        return "Could not remove mailbox permissions for $($userid). Error: $($_.Exception.Message)"
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -user $ExecutingUser -API $APIName -message "Could not remove mailbox permissions for $($userid). Error: $($ErrorMessage.NormalizedError)" -Sev 'Error' -tenant $TenantFilter -LogData $ErrorMessage
+        return "Could not remove mailbox permissions for $($userid). Error: $($ErrorMessage.NormalizedError)"
     }
 }
