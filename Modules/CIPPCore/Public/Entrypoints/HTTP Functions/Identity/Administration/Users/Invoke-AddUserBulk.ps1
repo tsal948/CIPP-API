@@ -14,7 +14,9 @@ Function Invoke-AddUserBulk {
     Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
     $TenantFilter = $Request.body.TenantFilter
     $Body = foreach ($userobj in $request.body.BulkUser) {
-        Write-Host 'PowerShell HTTP trigger function processed a request.'
+        if ($userobj.usageLocation.value) {
+            $userobj.usageLocation = $userobj.usageLocation.value
+        }
         try {
             $password = if ($userobj.password) { $userobj.password } else { New-passwordString }
             $UserprincipalName = "$($userobj.mailNickName)@$($userobj.domain)"
@@ -41,7 +43,7 @@ Function Invoke-AddUserBulk {
 
         } catch {
             Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($TenantFilter) -message "Failed to create user. Error:$($_.Exception.Message)" -Sev 'Error'
-            $results = "Failed to create user. $($_.Exception.Message)"
+            $results = "Failed to create user $($UserprincipalName). $($_.Exception.Message)"
         }
         [PSCustomObject]@{
             'Results'  = $results
