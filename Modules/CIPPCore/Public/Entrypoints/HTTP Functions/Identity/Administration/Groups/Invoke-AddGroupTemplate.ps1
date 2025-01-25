@@ -9,7 +9,6 @@ Function Invoke-AddGroupTemplate {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
     $APIName = $TriggerMetadata.FunctionName
     Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
@@ -21,7 +20,7 @@ Function Invoke-AddGroupTemplate {
             Displayname     = $request.body.displayname
             Description     = $request.body.description
             groupType       = $request.body.groupType
-            MembershipRules = $request.body.membershipRule
+            MembershipRules = $request.body.membershipRules
             allowExternal   = $request.body.allowExternal
             username        = $request.body.username
             GUID            = $GUID
@@ -36,8 +35,7 @@ Function Invoke-AddGroupTemplate {
         Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Created Group template named $($Request.body.displayname) with GUID $GUID" -Sev 'Debug'
 
         $body = [pscustomobject]@{'Results' = 'Successfully added template' }
-    }
-    catch {
+    } catch {
         Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Group Template Creation failed: $($_.Exception.Message)" -Sev 'Error'
         $body = [pscustomobject]@{'Results' = "Group Template Creation failed: $($_.Exception.Message)" }
     }

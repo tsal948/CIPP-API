@@ -13,8 +13,8 @@ Function Invoke-ExecSendPush {
     $APIName = $TriggerMetadata.FunctionName
     Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
-    $TenantFilter = $Request.Query.TenantFilter
-    $UserEmail = $Request.Query.UserEmail
+    $TenantFilter = $Request.body.TenantFilter
+    $UserEmail = $Request.body.UserEmail
     $MFAAppID = '981f26a1-7f43-403b-a875-f8b09b8cd720'
 
     # Function to keep trying to get the access token while we wait for MS to actually set the temp password
@@ -52,7 +52,7 @@ Function Invoke-ExecSendPush {
         $SPBody = [pscustomobject]@{
             appId = $MFAAppID
         }
-        $SPID = (New-GraphPostRequest -uri 'https://graph.microsoft.com/v1.0/servicePrincipals' -tenantid $TenantFilter -type POST -body $SPBody -verbose).id
+        $SPID = (New-GraphPostRequest -uri 'https://graph.microsoft.com/v1.0/servicePrincipals' -tenantid $TenantFilter -type POST -body $SPBody ).id
     }
 
 
@@ -64,7 +64,7 @@ Function Invoke-ExecSendPush {
         }
     } | ConvertTo-Json -Depth 5
 
-    $TempPass = (New-GraphPostRequest -uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SPID/addPassword" -tenantid $TenantFilter -type POST -body $PassReqBody -verbose).secretText
+    $TempPass = (New-GraphPostRequest -uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SPID/addPassword" -tenantid $TenantFilter -type POST -body $PassReqBody -AsApp $true).secretText
 
     # Give it a chance to apply
     #Start-Sleep 5
@@ -92,7 +92,7 @@ Function Invoke-ExecSendPush {
     try {
         $ClientToken = get-clientaccess -Uri $ClientUri -Body $body
     } catch {
-        $Body = 'Failed to create temporary password'
+        $Body = 'Failed to create temporary token for MFA Application. Error: ' + $_.Exception.Message
     }
 
     # If we got a token send a push
@@ -104,15 +104,16 @@ Function Invoke-ExecSendPush {
 
         if ($obj.BeginTwoWayAuthenticationResponse.result) {
             $Body = "Received an MFA confirmation: $($obj.BeginTwoWayAuthenticationResponse.result.value | Out-String)"
+            $colour = 'success'
         }
         if ($obj.BeginTwoWayAuthenticationResponse.AuthenticationResult -ne $true) {
             $Body = "Authentication Failed! Does the user have Push/Phone call MFA configured? Errorcode: $($obj.BeginTwoWayAuthenticationResponse.result.value | Out-String)"
-            $colour = 'danger'
+            $colour = 'error'
         }
 
     }
 
-    $Results = [pscustomobject]@{'Results' = $Body; colour = $colour }
+    $Results = [pscustomobject]@{'Results' = $Body; severity = $colour }
     Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Sent push request to $UserEmail - Result: $($obj.BeginTwoWayAuthenticationResponse.result.value | Out-String)" -Sev 'Info'
 
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
