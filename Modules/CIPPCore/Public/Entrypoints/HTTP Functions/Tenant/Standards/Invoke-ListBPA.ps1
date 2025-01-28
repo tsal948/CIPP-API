@@ -34,17 +34,21 @@ Function Invoke-ListBPA {
 
 
     if ($Request.query.tenantFilter -ne 'AllTenants' -and $Style -eq 'Tenant') {
+        $CustomerId = (Get-Tenants -TenantFilter $Request.query.tenantFilter).customerId
         $mergedObject = New-Object pscustomobject
-
-        $Data = (Get-CIPPAzDataTableEntity @Table -Filter "PartitionKey eq '$($Request.query.tenantFilter)'") | ForEach-Object {
+        $Data = (Get-CIPPAzDataTableEntity @Table -Filter "PartitionKey eq '$CustomerId'") | ForEach-Object {
             $row = $_
             $JSONFields | ForEach-Object {
                 $jsonContent = $row.$_
-                if ($jsonContent -ne $null -and $jsonContent -ne 'FAILED') {
-                    $row.$_ = $jsonContent | ConvertFrom-Json -Depth 15
+                if (![string]::IsNullOrEmpty($jsonContent) -and $jsonContent -ne 'FAILED') {
+                    try {
+                        $row.$_ = $jsonContent | ConvertFrom-Json -Depth 15
+                    } catch {
+                    }
                 }
             }
             $row.PSObject.Properties | ForEach-Object {
+                Write-Host "Adding $($_.Name) to mergedObject"
                 $mergedObject | Add-Member -NotePropertyName $_.Name -NotePropertyValue $_.Value -Force
             }
         }
@@ -61,8 +65,11 @@ Function Invoke-ListBPA {
             $row = $_
             $JSONFields | ForEach-Object {
                 $jsonContent = $row.$_
-                if ($jsonContent -ne $null -and $jsonContent -ne 'FAILED') {
-                    $row.$_ = $jsonContent | ConvertFrom-Json -Depth 15
+                if (![string]::IsNullOrEmpty($jsonContent) -and $jsonContent -ne 'FAILED') {
+                    try {
+                        $row.$_ = $jsonContent | ConvertFrom-Json -Depth 15
+                    } catch {
+                    }
                 }
             }
             $row | Where-Object -Property PartitionKey -In $Tenants.customerId
@@ -74,6 +81,11 @@ Function Invoke-ListBPA {
     $Results = [PSCustomObject]@{
         Data    = @($Data)
         Columns = @($Columns)
+        Keys    = $Data | ForEach-Object {
+            $_.PSObject.Properties |
+            Where-Object { $_.Name -ne 'PartitionKey' -and $_.Name -ne 'RowKey' -and $_.Name -ne 'Timestamp' } |
+            ForEach-Object { $_.Name }
+        } | Select-Object -Unique
         Style   = $Style
     }
 
@@ -81,6 +93,7 @@ Function Invoke-ListBPA {
         $Results = @{
             Columns = @( value = 'Results'; name = 'Results')
             Data    = @(@{ Results = 'The BPA has not yet run.' })
+            Keys    = @()
         }
     }
 

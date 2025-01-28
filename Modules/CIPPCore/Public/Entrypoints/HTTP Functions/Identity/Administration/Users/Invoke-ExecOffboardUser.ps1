@@ -9,13 +9,13 @@ Function Invoke-ExecOffboardUser {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-    if ($Request.body.user.value) { $AllUsers = $Request.body.user.value } else { $AllUsers = @($Request.body.user) }
+    $AllUsers = $Request.body.user.value
+    $Tenantfilter = $request.body.tenantfilter.value
     $Results = foreach ($username in $AllUsers) {
         try {
             $APIName = 'ExecOffboardUser'
             Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
-            $Tenantfilter = $request.body.tenantfilter
             if ($Request.body.Scheduled.enabled) {
                 $taskObject = [PSCustomObject]@{
                     TenantFilter  = $Tenantfilter
@@ -23,7 +23,7 @@ Function Invoke-ExecOffboardUser {
                     Command       = @{
                         value = 'Invoke-CIPPOffboardingJob'
                     }
-                    Parameters    = @{
+                    Parameters    = [pscustomobject]@{
                         Username     = $Username
                         APIName      = 'Scheduled Offboarding'
                         options      = $request.body
