@@ -10,8 +10,8 @@ Function Invoke-ListLicenses {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
 
     # Write to the Azure Functions log stream.
@@ -29,7 +29,6 @@ Function Invoke-ListLicenses {
         $Table = Get-CIPPTable -TableName cachelicenses
         $Rows = Get-CIPPAzDataTableEntity @Table | Where-Object -Property Timestamp -GT (Get-Date).AddHours(-1)
         if (!$Rows) {
-            #Push-OutputBinding -Name LicenseQueue -Value (Get-Date).ToString()
             $GraphRequest = [PSCustomObject]@{
                 Tenant  = 'Loading data for all tenants. Please check back in 1 minute'
                 License = 'Loading data for all tenants. Please check back in 1 minute'

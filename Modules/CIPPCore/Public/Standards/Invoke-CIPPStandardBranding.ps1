@@ -1,10 +1,40 @@
 function Invoke-CIPPStandardBranding {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) Branding
+    .SYNOPSIS
+        (Label) Set branding for the tenant
+    .DESCRIPTION
+        (Helptext) Sets the branding for the tenant. This includes the login page, and the Office 365 portal.
+        (DocsDescription) Sets the branding for the tenant. This includes the login page, and the Office 365 portal.
+    .NOTES
+        CAT
+            Global Standards
+        TAG
+            "lowimpact"
+        ADDEDCOMPONENT
+            {"type":"textField","name":"standards.Branding.signInPageText","label":"Sign-in page text","required":false}
+            {"type":"textField","name":"standards.Branding.usernameHintText","label":"Username hint Text","required":false}
+            {"type":"switch","name":"standards.Branding.hideAccountResetCredentials","label":"Hide self-service password reset"}
+            {"type":"select","multiple":false,"label":"Visual Template","name":"standards.Branding.layoutTemplateType","options":[{"label":"Full-screen background","value":"default"},{"label":"Partial-screen background","value":"verticalSplit"}]}
+            {"type":"switch","name":"standards.Branding.isHeaderShown","label":"Show header"}
+            {"type":"switch","name":"standards.Branding.isFooterShown","label":"Show footer"}
+        IMPACT
+            Low Impact
+        POWERSHELLEQUIVALENT
+            Portal only
+        RECOMMENDEDBY
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/global-standards#low-impact
     #>
 
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'Branding'
+
     $TenantId = Get-Tenants | Where-Object -Property defaultDomainName -EQ $Tenant
 
     try {
