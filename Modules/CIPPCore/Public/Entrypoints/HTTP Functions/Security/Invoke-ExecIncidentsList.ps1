@@ -10,8 +10,8 @@ Function Invoke-ExecIncidentsList {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
     try {
         # Interact with query parameters or the body of the request.
         $TenantFilter = $Request.Query.TenantFilter
@@ -41,7 +41,21 @@ Function Invoke-ExecIncidentsList {
             $Filter = "PartitionKey eq 'Incident'"
             $Rows = Get-CIPPAzDataTableEntity @Table -filter $Filter | Where-Object -Property Timestamp -GT (Get-Date).AddMinutes(-10)
             if (!$Rows) {
-                Push-OutputBinding -Name incidentqueue -Value (Get-Date).ToString()
+                $TenantList = Get-Tenants -IncludeErrors
+                $Queue = New-CippQueueEntry -Name 'Incidents - All Tenants' -Link '/security/reports/incident-report?customerId=AllTenants' -TotalTasks ($TenantList | Measure-Object).Count
+                $InputObject = [PSCustomObject]@{
+                    OrchestratorName = 'IncidentOrchestrator'
+                    QueueFunction    = @{
+                        FunctionName    = 'GetTenants'
+                        TenantParams    = @{
+                            IncludeErrors = $true
+                        }
+                        QueueId         = $Queue.RowKey
+                        DurableFunction = 'ExecIncidentsListAllTenants'
+                    }
+                    SkipLog          = $true
+                }
+                Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
                 [PSCustomObject]@{
                     Waiting = $true
                 }
@@ -75,7 +89,7 @@ Function Invoke-ExecIncidentsList {
     if (!$body) {
         $StatusCode = [HttpStatusCode]::OK
         $body = [PSCustomObject]@{
-            MSResults = ($GraphRequest | Where-Object -Property id -NE $null)
+            Results = @($GraphRequest | Where-Object -Property id -NE $null)
         }
     }
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{

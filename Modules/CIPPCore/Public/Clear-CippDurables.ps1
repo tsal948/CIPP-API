@@ -3,14 +3,11 @@ function Clear-CippDurables {
     Param()
     # Collect info
     $StorageContext = New-AzStorageContext -ConnectionString $env:AzureWebJobsStorage
-    $FunctionName = $env:WEBSITE_SITE_NAME
+    $FunctionName = $env:WEBSITE_SITE_NAME -replace '-', ''
 
     # Get orchestrators
     $InstancesTable = Get-CippTable -TableName ('{0}Instances' -f $FunctionName)
     $HistoryTable = Get-CippTable -TableName ('{0}History' -f $FunctionName)
-    $Yesterday = (Get-Date).AddDays(-1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $Filter = "CreatedTime ge datetime'$Yesterday' or RuntimeStatus eq 'Pending' or RuntimeStatus eq 'Running'"
-    $Instances = Get-CippAzDataTableEntity @InstancesTable -Filter $Filter
 
     $Queues = Get-AzStorageQueue -Context $StorageContext -Name ('{0}*' -f $FunctionName) | Select-Object -Property Name, ApproximateMessageCount, QueueClient
 
@@ -32,7 +29,7 @@ function Clear-CippDurables {
     }
     if (($QueueEntities | Measure-Object).Count -gt 0) {
         if ($PSCmdlet.ShouldProcess('Queues', 'Mark Failed')) {
-            Update-AzDataTableEntity @QueueTable -Entity $QueueEntities
+            Update-AzDataTableEntity -Force @QueueTable -Entity $QueueEntities
         }
     }
 
@@ -44,13 +41,13 @@ function Clear-CippDurables {
                 $Task.Status = 'Failed'
                 $Task
             }
-            Update-AzDataTableEntity @CippQueueTasks -Entity $UpdatedTasks
+            Update-AzDataTableEntity -Force @CippQueueTasks -Entity $UpdatedTasks
         }
     }
 
     Remove-AzDataTable @InstancesTable
     Remove-AzDataTable @HistoryTable
-    $BlobContainer = '{0}-largemessages' -f $Function.Name
+    $BlobContainer = '{0}-largemessages' -f $FunctionName
     if (Get-AzStorageContainer -Name $BlobContainer -Context $StorageContext -ErrorAction SilentlyContinue) {
         Write-Information "- Removing blob container: $BlobContainer"
         if ($PSCmdlet.ShouldProcess($BlobContainer, 'Remove Blob Container')) {

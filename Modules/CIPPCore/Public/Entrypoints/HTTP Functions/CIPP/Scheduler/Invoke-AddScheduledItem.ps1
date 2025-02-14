@@ -9,13 +9,13 @@ Function Invoke-AddScheduledItem {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-    if ($Request.query.hidden -eq $null) {
+    if ($null -eq $Request.query.hidden) {
         $hidden = $false
     } else {
         $hidden = $true
     }
-    $Result = Add-CIPPScheduledTask -Task $Request.body -hidden $hidden
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message $Result -Sev 'Info'
+    $Result = Add-CIPPScheduledTask -Task $Request.body -Headers $Request.Headers -hidden $hidden -DisallowDuplicateName $Request.query.DisallowDuplicateName
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message $Result -Sev 'Info'
 
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
