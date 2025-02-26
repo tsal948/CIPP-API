@@ -18,8 +18,8 @@ function Set-CIPPForwarding {
     .PARAMETER username
     Username to manage for forwarding.
 
-    .PARAMETER ExecutingUser
-    CIPP user executing the command.
+    .PARAMETER Headers
+    CIPP HTTP Request headers.
 
     .PARAMETER APIName
     Name of the API executing the command.
@@ -40,27 +40,34 @@ function Set-CIPPForwarding {
         [string]$forwardingSMTPAddress,
         [string]$tenantFilter,
         [string]$username,
-        [string]$ExecutingUser,
+        $Headers,
         [string]$APIName = 'Forwarding',
         [string]$Forward,
-        [bool]$KeepCopy,
+        $KeepCopy,
         [bool]$Disable
     )
+
 
     try {
         if (!$username) { $username = $userid }
         if ($PSCmdlet.ShouldProcess($username, 'Set forwarding')) {
-            $null = New-ExoRequest -tenantid $tenantFilter -cmdlet 'Set-mailbox' -cmdParams @{Identity = $userid; ForwardingSMTPAddress = $forwardingSMTPAddress; ForwardingAddress = $Forward ; DeliverToMailboxAndForward = [bool]$KeepCopy } -Anchor $username
+            if ($Disable -eq $true) {
+                Write-Output "Disabling forwarding for $username"
+                $null = New-ExoRequest -tenantid $tenantFilter -cmdlet 'Set-mailbox' -cmdParams @{Identity = $userid; ForwardingSMTPAddress = $null; ForwardingAddress = $null ; DeliverToMailboxAndForward = $false } -Anchor $username
+                $Message = "Disabled forwarding for $username"
+            } elseif ($Forward) {
+                $null = New-ExoRequest -tenantid $tenantFilter -cmdlet 'Set-mailbox' -cmdParams @{Identity = $userid; ForwardingSMTPAddress = $null; ForwardingAddress = $Forward ; DeliverToMailboxAndForward = $KeepCopy } -Anchor $username
+                $Message = "Forwarding all email for $username to Internal Address $Forward and keeping a copy set to $KeepCopy"
+            } elseif ($forwardingSMTPAddress) {
+                $null = New-ExoRequest -tenantid $tenantFilter -cmdlet 'Set-mailbox' -cmdParams @{Identity = $userid; ForwardingSMTPAddress = $forwardingSMTPAddress; ForwardingAddress = $null ; DeliverToMailboxAndForward = $KeepCopy } -Anchor $username
+                $Message = "Forwarding all email for $username to External Address $ForwardingSMTPAddress and keeping a copy set to $KeepCopy"
+            }
         }
-        if (!$Disable) {
-            $Message = "Forwarding all email for $username to $Forward"
-        } else {
-            $Message = "Disabled forwarding for $username"
-        }
-        Write-LogMessage -user $ExecutingUser -API $APIName -message $Message -Sev 'Info' -tenant $TenantFilter
+        Write-LogMessage -headers $Headers -API $APIName -message $Message -Sev 'Info' -tenant $TenantFilter
         return $Message
     } catch {
-        Write-LogMessage -user $ExecutingUser -API $APIName -message "Could not add forwarding for $($username)" -Sev 'Error' -tenant $TenantFilter
-        return "Could not add forwarding for $($username). Error: $($_.Exception.Message)"
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -headers $Headers -API $APIName -message "Could not add forwarding for $($username). Error: $($ErrorMessage.NormalizedError)" -Sev 'Error' -tenant $TenantFilter -LogData $ErrorMessage
+        return "Could not add forwarding for $($username). Error: $($ErrorMessage.NormalizedError)"
     }
 }

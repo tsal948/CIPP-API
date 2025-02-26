@@ -10,29 +10,31 @@ Function Invoke-RemoveUser {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -Headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
 
     # Interact with query parameters or the body of the request.
-    $TenantFilter = $Request.Query.TenantFilter
-    $userid = $Request.Query.ID
-    if (!$userid) { exit }
+    $TenantFilter = $Request.Query.tenantFilter ?? $Request.Body.tenantFilter
+    $UserID = $Request.Query.ID ?? $Request.Body.ID
+
+    if (!$UserID) { exit }
     try {
-        $GraphRequest = New-GraphPostRequest -uri "https://graph.microsoft.com/beta/users/$($userid)" -type DELETE -tenant $TenantFilter
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Deleted $userid" -Sev 'Info' -tenant $TenantFilter
-        $body = [pscustomobject]@{'Results' = 'Successfully deleted the user.' }
+        $null = New-GraphPostRequest -uri "https://graph.microsoft.com/beta/users/$($UserID)" -type DELETE -tenant $TenantFilter
+        $Result = "Successfully deleted $UserID."
+        Write-LogMessage -Headers $Headers -API $APIName -message $Result -Sev 'Info' -tenant $TenantFilter
+        $StatusCode = [HttpStatusCode]::OK
 
     } catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Could not delete user $userid. $($_.Exception.Message)" -Sev 'Error' -tenant $TenantFilter
-        $body = [pscustomobject]@{'Results' = "Could not delete user: $($_.Exception.Message)" }
-
+        $ErrorMessage = Get-CippException -Exception $_
+        $Result = "Could not delete user $($UserID). $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -Headers $Headers -API $APIName -message $Result -Sev 'Error' -tenant $TenantFilter -LogData $ErrorMessage
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
     # Associate values to output bindings by calling 'Push-OutputBinding'.
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+            StatusCode = $StatusCode
+            Body       = @{ 'Results' = $Result }
         })
-
-
 }
