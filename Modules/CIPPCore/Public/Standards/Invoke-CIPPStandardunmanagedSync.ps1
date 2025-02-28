@@ -1,9 +1,35 @@
 function Invoke-CIPPStandardunmanagedSync {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) unmanagedSync
+    .SYNOPSIS
+        (Label) Only allow users to sync OneDrive from AAD joined devices
+    .DESCRIPTION
+        (Helptext) The unmanaged Sync standard has been temporarily disabled and does nothing.
+        (DocsDescription) The unmanaged Sync standard has been temporarily disabled and does nothing.
+    .NOTES
+        CAT
+            SharePoint Standards
+        TAG
+        ADDEDCOMPONENT
+        IMPACT
+            High Impact
+        ADDEDDATE
+            2022-06-15
+        POWERSHELLEQUIVALENT
+            Update-MgAdminSharePointSetting
+        RECOMMENDEDBY
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/sharepoint-standards#high-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'unmanagedSync'
+
     $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -tenantid $Tenant -AsApp $true
 
     If ($Settings.remediate -eq $true) {

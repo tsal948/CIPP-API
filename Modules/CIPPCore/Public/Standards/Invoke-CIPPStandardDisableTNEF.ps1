@@ -1,10 +1,36 @@
 function Invoke-CIPPStandardDisableTNEF {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) DisableTNEF
+    .SYNOPSIS
+        (Label) Disable TNEF/winmail.dat
+    .DESCRIPTION
+        (Helptext) Disables Transport Neutral Encapsulation Format (TNEF)/winmail.dat for the tenant. TNEF can cause issues if the recipient is not using a client supporting TNEF.
+        (DocsDescription) Disables Transport Neutral Encapsulation Format (TNEF)/winmail.dat for the tenant. TNEF can cause issues if the recipient is not using a client supporting TNEF. Cannot be overridden by the user. For more information, see [Microsoft's documentation.](https://learn.microsoft.com/en-us/exchange/mail-flow/content-conversion/tnef-conversion?view=exchserver-2019)
+    .NOTES
+        CAT
+            Exchange Standards
+        TAG
+        ADDEDCOMPONENT
+        IMPACT
+            Low Impact
+        ADDEDDATE
+            2024-04-26
+        POWERSHELLEQUIVALENT
+            Set-RemoteDomain -Identity 'Default' -TNEFEnabled \$false
+        RECOMMENDEDBY
+            "CIPP"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#low-impact
     #>
 
     param ($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableTNEF'
+
     $CurrentState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-RemoteDomain' -cmdParams @{Identity = 'Default' }
 
     if ($Settings.remediate -eq $true) {
