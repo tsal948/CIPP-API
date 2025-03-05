@@ -10,9 +10,12 @@ function Set-CIPPDefaultAPEnrollment {
         $TimeOutInMinutes,
         $AllowFail,
         $OBEEOnly,
-        $ExecutingUser,
+        $Headers,
         $APIName = 'Add Default Enrollment Status Page'
     )
+
+    $User = $Request.Headers
+
     try {
         $ObjBody = [pscustomobject]@{
             '@odata.type'                             = '#microsoft.graph.windows10EnrollmentCompletionPageConfiguration'
@@ -37,10 +40,11 @@ function Set-CIPPDefaultAPEnrollment {
         if ($PSCmdlet.ShouldProcess($ExistingStatusPage.ID, 'Set Default Enrollment Status Page')) {
             $null = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations/$($ExistingStatusPage.ID)" -body $body -Type PATCH -tenantid $($TenantFilter)
             "Successfully changed default enrollment status page for $($($TenantFilter))"
-            Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($TenantFilter) -message "Added Autopilot Enrollment Status Page $($Displayname)" -Sev 'Info'
+            Write-LogMessage -Headers $User -API $APINAME -tenant $($TenantFilter) -message "Added Autopilot Enrollment Status Page $($Displayname)" -Sev 'Info'
         }
     } catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($TenantFilter) -message "Failed adding Autopilot Enrollment Status Page $($Displayname). Error: $($_.Exception.Message)" -Sev 'Error'
-        throw "Failed to change default enrollment status page for $($($TenantFilter)): $($_.Exception.Message)"
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -Headers $User -API $APINAME -tenant $($TenantFilter) -message "Failed adding Autopilot Enrollment Status Page $($Displayname). Error: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
+        throw "Failed to change default enrollment status page for $($($TenantFilter)): $($ErrorMessage.NormalizedError)"
     }
 }

@@ -10,8 +10,8 @@ Function Invoke-ExecAlertsList {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
 
     # Write to the Azure Functions log stream.
@@ -60,9 +60,24 @@ Function Invoke-ExecAlertsList {
             $Filter = "PartitionKey eq 'alert'"
             $Rows = Get-CIPPAzDataTableEntity @Table -filter $Filter | Where-Object -Property Timestamp -GT (Get-Date).AddMinutes(-10)
             if (!$Rows) {
-                Push-OutputBinding -Name alertqueue -Value (Get-Date).ToString()
+                $TenantList = Get-Tenants -IncludeErrors
+                $Queue = New-CippQueueEntry -Name 'Alerts List - All Tenants' -TotalTasks ($TenantList | Measure-Object).Count
+                $InputObject = [PSCustomObject]@{
+                    OrchestratorName = 'AlertsList'
+                    QueueFunction    = [PSCustomObject]@{
+                        FunctionName = 'GetTenants'
+                        QueueId      = $Queue.RowKey
+                        TenantParams = @{
+                            IncludeErrors = $true
+                        }
+                        DurableName  = 'ExecAlertsListAllTenants'
+                    }
+                    SkipLog          = $true
+                } | ConvertTo-Json -Depth 10
+                $InstanceId = Start-NewOrchestration -FunctionName CIPPOrchestrator -InputObject $InputObject
                 [PSCustomObject]@{
-                    Waiting = $true
+                    Waiting    = $true
+                    InstanceId = $InstanceId
                 }
             } else {
                 $Alerts = $Rows

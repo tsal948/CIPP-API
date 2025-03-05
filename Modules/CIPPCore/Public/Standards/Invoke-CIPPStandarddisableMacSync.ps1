@@ -1,9 +1,35 @@
 function Invoke-CIPPStandarddisableMacSync {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) disableMacSync
+    .SYNOPSIS
+        (Label) Do not allow Mac devices to sync using OneDrive
+    .DESCRIPTION
+        (Helptext) Disables the ability for Mac devices to sync with OneDrive.
+        (DocsDescription) Disables the ability for Mac devices to sync with OneDrive.
+    .NOTES
+        CAT
+            SharePoint Standards
+        TAG
+        ADDEDCOMPONENT
+        IMPACT
+            High Impact
+        ADDEDDATE
+            2022-06-15
+        POWERSHELLEQUIVALENT
+            Update-MgAdminSharePointSetting
+        RECOMMENDEDBY
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/sharepoint-standards#high-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'disableMacSync'
+
     $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -tenantid $Tenant -AsApp $true
 
     If ($Settings.remediate -eq $true) {
