@@ -1,9 +1,38 @@
 function Invoke-CIPPStandardDisableSharePointLegacyAuth {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) DisableSharePointLegacyAuth
+    .SYNOPSIS
+        (Label) Disable legacy basic authentication for SharePoint
+    .DESCRIPTION
+        (Helptext) Disables the ability to authenticate with SharePoint using legacy authentication methods. Any applications that use legacy authentication will need to be updated to use modern authentication.
+        (DocsDescription) Disables the ability for users and applications to access SharePoint via legacy basic authentication. This will likely not have any user impact, but will block systems/applications depending on basic auth or the SharePointOnlineCredentials class.
+    .NOTES
+        CAT
+            SharePoint Standards
+        TAG
+            "CIS"
+            "spo_legacy_auth"
+        ADDEDCOMPONENT
+        IMPACT
+            Medium Impact
+        ADDEDDATE
+            2024-02-05
+        POWERSHELLEQUIVALENT
+            Set-SPOTenant -LegacyAuthProtocolsEnabled \$false
+        RECOMMENDEDBY
+            "CIS"
+            "CIPP"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/sharepoint-standards#medium-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableSharePointLegacyAuth'
 
     $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings?$select=isLegacyAuthProtocolsEnabled' -tenantid $Tenant -AsApp $true
 

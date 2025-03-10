@@ -10,8 +10,8 @@ Function Invoke-AddMSPApp {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
     Write-Host 'PowerShell HTTP trigger function processed a request.'
     $RMMApp = $request.body
@@ -24,7 +24,8 @@ Function Invoke-AddMSPApp {
         $InstallParams = [pscustomobject]$RMMApp.params
         switch ($rmmapp.RMMName.value) {
             'datto' {
-                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -URL $($InstallParams.DattoURL) -GUID $($InstallParams.DattoGUID["$($tenant.customerId)"])"
+                Write-Host 'test'
+                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -URL $($InstallParams.DattoURL) -GUID $($InstallParams.DattoGUID."$($tenant.customerId)")"
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
             'ninja' {
@@ -32,15 +33,15 @@ Function Invoke-AddMSPApp {
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
             'Huntress' {
-                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -OrgKey $($InstallParams.Orgkey["$($tenant.customerId)"]) -acctkey $($InstallParams.AccountKey)"
+                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -OrgKey $($InstallParams.Orgkey."$($tenant.customerId)") -acctkey $($InstallParams.AccountKey)"
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\install.ps1 -Uninstall'
             }
             'Immybot' {
-                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -url $($InstallParams.ClientURL["$($tenant.customerId)"])"
+                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -url $($InstallParams.ClientURL."$($tenant.customerId)")"
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
             'syncro' {
-                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -URL $($InstallParams.ClientURL["$($tenant.customerId)"])"
+                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -URL $($InstallParams.ClientURL."$($tenant.customerId)")"
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
             'NCentral' {
@@ -48,13 +49,13 @@ Function Invoke-AddMSPApp {
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
             'automate' {
-                $installcommandline = "c:\windows\sysnative\windowspowershell\v1.0\powershell.exe -executionpolicy bypass .\install.ps1 -Server $($InstallParams.Server) -InstallerToken $($InstallParams.InstallerToken["$($tenant.customerId)"]) -LocationID $($InstallParams.LocationID["$($tenant.customerId)"])"
+                $installcommandline = "c:\windows\sysnative\windowspowershell\v1.0\powershell.exe -executionpolicy bypass .\install.ps1 -Server $($InstallParams.Server) -InstallerToken $($InstallParams.InstallerToken."$($tenant.customerId)") -LocationID $($InstallParams.LocationID."$($tenant.customerId)")"
                 $UninstallCommandLine = "c:\windows\sysnative\windowspowershell\v1.0\powershell.exe -executionpolicy bypass .\uninstall.ps1 -Server $($InstallParams.Server)"
                 $DetectionScript = (Get-Content 'AddMSPApp\automate.detection.ps1' -Raw) -replace '##SERVER##', $InstallParams.Server
                 $intuneBody.detectionRules[0].scriptContent = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($DetectionScript))
             }
             'cwcommand' {
-                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -Url $($InstallParams.ClientURL["$($tenant.customerId)"])"
+                $installcommandline = "powershell.exe -executionpolicy bypass .\install.ps1 -Url $($InstallParams.ClientURL."$($tenant.customerId)")"
                 $UninstallCommandLine = 'powershell.exe -executionpolicy bypass .\uninstall.ps1'
             }
         }
@@ -80,9 +81,9 @@ Function Invoke-AddMSPApp {
                 status       = 'Not Deployed yet'
             }
             "Successfully added MSP App for $($Tenant.defaultDomainName) to queue. "
-            Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $tenant.defaultDomainName -message "MSP Application $($intunebody.Displayname) added to queue" -Sev 'Info'
+            Write-LogMessage -headers $Request.Headers -API $APINAME -tenant $tenant.defaultDomainName -message "MSP Application $($intunebody.Displayname) added to queue" -Sev 'Info'
         } catch {
-            Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $tenant.defaultDomainName -message "Failed to add MSP Application $($intunebody.Displayname) to queue" -Sev 'Error'
+            Write-LogMessage -headers $Request.Headers -API $APINAME -tenant $tenant.defaultDomainName -message "Failed to add MSP Application $($intunebody.Displayname) to queue" -Sev 'Error'
             "Failed to add MSP app for $($Tenant.defaultDomainName) to queue"
         }
     }
