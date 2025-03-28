@@ -1,9 +1,37 @@
 function Invoke-CIPPStandardEnableCustomerLockbox {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) EnableCustomerLockbox
+    .SYNOPSIS
+        (Label) Enable Customer Lockbox
+    .DESCRIPTION
+        (Helptext) Enables Customer Lockbox that offers an approval process for Microsoft support to access organization data
+        (DocsDescription) Customer Lockbox ensures that Microsoft can't access your content to do service operations without your explicit approval. Customer Lockbox ensures only authorized requests allow access to your organizations data.
+    .NOTES
+        CAT
+            Global Standards
+        TAG
+            "CIS"
+            "CustomerLockBoxEnabled"
+        ADDEDCOMPONENT
+        IMPACT
+            Low Impact
+        ADDEDDATE
+            2024-01-08
+        POWERSHELLEQUIVALENT
+            Set-OrganizationConfig -CustomerLockBoxEnabled \$true
+        RECOMMENDEDBY
+            "CIS"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/global-standards#low-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'EnableCustomerLockbox'
 
     $CustomerLockboxStatus = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-OrganizationConfig').CustomerLockboxEnabled
     if ($Settings.remediate -eq $true) {
@@ -30,11 +58,14 @@ function Invoke-CIPPStandardEnableCustomerLockbox {
         if ($CustomerLockboxStatus) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Customer Lockbox is enabled' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Customer Lockbox is not enabled' -sev Alert
+            Write-StandardsAlert -message 'Customer Lockbox is not enabled' -object $CustomerLockboxStatus -tenant $tenant -standardName 'EnableCustomerLockbox' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Customer Lockbox is not enabled' -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
+        $state = $CustomerLockboxStatus ? $true : $false
+        Set-CIPPStandardsCompareField -FieldName 'standards.EnableCustomerLockbox' -FieldValue $state -Tenant $tenant
         Add-CIPPBPAField -FieldName 'CustomerLockboxEnabled' -FieldValue $CustomerLockboxStatus -StoreAs bool -Tenant $tenant
     }
 }

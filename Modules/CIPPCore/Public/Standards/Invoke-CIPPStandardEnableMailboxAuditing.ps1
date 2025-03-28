@@ -1,9 +1,39 @@
 function Invoke-CIPPStandardEnableMailboxAuditing {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) EnableMailboxAuditing
+    .SYNOPSIS
+        (Label) Enable Mailbox auditing
+    .DESCRIPTION
+        (Helptext) Enables Mailbox auditing for all mailboxes and on tenant level. Disables audit bypass on all mailboxes. Unified Audit Log needs to be enabled for this standard to function.
+        (DocsDescription) Enables mailbox auditing on tenant level and for all mailboxes. Disables audit bypass on all mailboxes. By default Microsoft does not enable mailbox auditing for Resource Mailboxes, Public Folder Mailboxes and DiscoverySearch Mailboxes. Unified Audit Log needs to be enabled for this standard to function.
+    .NOTES
+        CAT
+            Exchange Standards
+        TAG
+            "CIS"
+            "exo_mailboxaudit"
+        ADDEDCOMPONENT
+        IMPACT
+            Low Impact
+        ADDEDDATE
+            2024-01-08
+        POWERSHELLEQUIVALENT
+            Set-OrganizationConfig -AuditDisabled \$false
+        RECOMMENDEDBY
+            "CIS"
+            "CIPP"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#low-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'EnableMailboxAuditing'
+
     $AuditState = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-OrganizationConfig').AuditDisabled
 
     if ($Settings.remediate -eq $true) {
@@ -79,7 +109,8 @@ function Invoke-CIPPStandardEnableMailboxAuditing {
 
     if ($Settings.alert -eq $true) {
         if ($AuditState) {
-            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Tenant level mailbox audit is not enabled' -sev Alert
+            Write-StandardsAlert -message 'Tenant level mailbox audit is not enabled' -object $AuditState -tenant $Tenant -standardName 'EnableMailboxAuditing' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Tenant level mailbox audit is not enabled' -sev Info
         } else {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Tenant level mailbox audit is enabled' -sev Info
         }
@@ -87,6 +118,7 @@ function Invoke-CIPPStandardEnableMailboxAuditing {
 
     if ($Settings.report -eq $true) {
         $AuditState = -not $AuditState
+        Set-CIPPStandardsCompareField -FieldName 'standards.EnableMailboxAuditing' -FieldValue $AuditState -Tenant $Tenant
         Add-CIPPBPAField -FieldName 'MailboxAuditingEnabled' -FieldValue $AuditState -StoreAs bool -Tenant $Tenant
     }
 
