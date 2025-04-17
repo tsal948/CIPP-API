@@ -1,11 +1,38 @@
 function Invoke-CIPPStandardSafeSendersDisable {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) SafeSendersDisable
+    .SYNOPSIS
+        (Label) Remove Safe Senders to prevent SPF bypass
+    .DESCRIPTION
+        (Helptext) Loops through all users and removes the Safe Senders list. This is to prevent SPF bypass attacks, as the Safe Senders list is not checked by SPF.
+        (DocsDescription) Loops through all users and removes the Safe Senders list. This is to prevent SPF bypass attacks, as the Safe Senders list is not checked by SPF.
+    .NOTES
+        CAT
+            Exchange Standards
+        TAG
+        ADDEDCOMPONENT
+        DISABLEDFEATURES
+            {"report":true,"warn":true,"remediate":false}
+        IMPACT
+            Medium Impact
+        ADDEDDATE
+            2023-10-26
+        POWERSHELLEQUIVALENT
+            Set-MailboxJunkEmailConfiguration
+        RECOMMENDEDBY
+            "CIPP"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#medium-impact
     #>
+
     param($Tenant, $Settings)
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         try {
             $Mailboxes = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-Mailbox' -select 'UserPrincipalName'
             $Request = $Mailboxes | ForEach-Object {
