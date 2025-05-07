@@ -1,9 +1,35 @@
 function Invoke-CIPPStandardDisableM365GroupUsers {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) DisableM365GroupUsers
+    .SYNOPSIS
+        (Label) Disable M365 Group creation by users
+    .DESCRIPTION
+        (Helptext) Restricts M365 group creation to certain admin roles. This disables the ability to create Teams, SharePoint sites, Planner, etc
+        (DocsDescription) Users by default are allowed to create M365 groups. This restricts M365 group creation to certain admin roles. This disables the ability to create Teams, SharePoint sites, Planner, etc
+    .NOTES
+        CAT
+            Entra (AAD) Standards
+        TAG
+        ADDEDCOMPONENT
+        IMPACT
+            Low Impact
+        ADDEDDATE
+            2022-07-17
+        POWERSHELLEQUIVALENT
+            Update-MgBetaDirectorySetting
+        RECOMMENDEDBY
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/entra-aad-standards#low-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableM365GroupUsers'
+
     $CurrentState = (New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/settings' -tenantid $tenant) | Where-Object -Property displayname -EQ 'Group.unified'
 
     If ($Settings.remediate -eq $true) {
@@ -33,10 +59,12 @@ function Invoke-CIPPStandardDisableM365GroupUsers {
             if (($CurrentState.values | Where-Object { $_.name -eq 'EnableGroupCreation' }).value -eq 'false') {
                 Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are disabled from creating M365 Groups.' -sev Info
             } else {
-                Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not disabled from creating M365 Groups.' -sev Alert
+                Write-StandardsAlert -message 'Users are not disabled from creating M365 Groups.' -object $CurrentState -tenant $tenant -standardName 'DisableM365GroupUsers' -standardId $Settings.standardId
+                Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not disabled from creating M365 Groups.' -sev Info
             }
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not disabled from creating M365 Groups.' -sev Alert
+            Write-StandardsAlert -message 'Users are not disabled from creating M365 Groups.' -object @{CurrentState = $null } -tenant $tenant -standardName 'DisableM365GroupUsers' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are not disabled from creating M365 Groups.' -sev Info
         }
     }
     if ($Settings.report -eq $true) {
@@ -49,6 +77,7 @@ function Invoke-CIPPStandardDisableM365GroupUsers {
         } else {
             $CurrentState = $false
         }
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableM365GroupUsers' -FieldValue $CurrentState -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'DisableM365GroupUsers' -FieldValue $CurrentState -StoreAs bool -Tenant $tenant
     }
 

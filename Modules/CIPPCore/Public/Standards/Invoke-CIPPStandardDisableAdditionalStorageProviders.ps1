@@ -1,9 +1,38 @@
 function Invoke-CIPPStandardDisableAdditionalStorageProviders {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) DisableAdditionalStorageProviders
+    .SYNOPSIS
+        (Label) Disable additional storage providers in OWA
+    .DESCRIPTION
+        (Helptext) Disables the ability for users to open files in Outlook on the Web, from other providers such as Box, Dropbox, Facebook, Google Drive, OneDrive Personal, etc.
+        (DocsDescription) Disables additional storage providers in OWA. This is to prevent users from using personal storage providers like Dropbox, Google Drive, etc. Usually this has little user impact.
+    .NOTES
+        CAT
+            Exchange Standards
+        TAG
+            "CIS"
+            "exo_storageproviderrestricted"
+        ADDEDCOMPONENT
+        IMPACT
+            Low Impact
+        ADDEDDATE
+            2024-01-17
+        POWERSHELLEQUIVALENT
+            Get-OwaMailboxPolicy \| Set-OwaMailboxPolicy -AdditionalStorageProvidersEnabled \$False
+        RECOMMENDEDBY
+            "CIS"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#low-impact
     #>
+
     param($Tenant, $Settings)
+    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableAdditionalStorageProviders'
+
     $AdditionalStorageProvidersState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-OwaMailboxPolicy' -cmdParams @{Identity = 'OwaMailboxPolicy-Default' }
 
     if ($Settings.remediate -eq $true) {
@@ -25,13 +54,17 @@ function Invoke-CIPPStandardDisableAdditionalStorageProviders {
 
     if ($Settings.alert -eq $true) {
         if ($AdditionalStorageProvidersState.AdditionalStorageProvidersAvailable) {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'OWA additional storage providers are enabled' -sev Alert
+            $Object = $AdditionalStorageProvidersState | Select-Object -Property AdditionalStorageProvidersAvailable
+            Write-StandardsAlert -message 'OWA additional storage providers are enabled' -object $Object -tenant $tenant -standardName 'DisableAdditionalStorageProviders' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'OWA additional storage providers are enabled' -sev Info
         } else {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'OWA additional storage providers are disabled' -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
+        $state = $AdditionalStorageProvidersState.AdditionalStorageProvidersEnabled ? $false : $true
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableAdditionalStorageProviders' -FieldValue $state -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'AdditionalStorageProvidersEnabled' -FieldValue $AdditionalStorageProvidersState.AdditionalStorageProvidersEnabled -StoreAs bool -Tenant $tenant
     }
 }

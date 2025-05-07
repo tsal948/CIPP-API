@@ -2,18 +2,20 @@ function Set-CIPPMessageCopy {
     [CmdletBinding()]
     param (
         $userid,
-        $MessageCopyForSentAsEnabled,
+        [bool]$MessageCopyForSentAsEnabled,
         $TenantFilter,
-        $APIName = "Manage OneDrive Access",
-        $ExecutingUser
+        $APIName = 'Manage OneDrive Access',
+        $Headers
     )
     Try {
-        New-ExoRequest -tenantid $TenantFilter -cmdlet "Set-mailbox" -cmdParams @{Identity = $userid; MessageCopyForSentAsEnabled = $MessageCopyForSentAsEnabled }
-        Write-LogMessage -user $ExecutingUser -API $APINAME -tenant $($tenantfilter) -message "Successfully set MessageCopyForSentAsEnabled as $MessageCopyForSentAsEnabled on $($userid)." -Sev "Info"
-        return "Successfully set MessageCopyForSentAsEnabled as $MessageCopyForSentAsEnabled on $($userid)."
-    }
-    catch {
-        Write-LogMessage -user $ExecutingUser -API $APINAME -tenant $($tenantfilter) -message "set MessageCopyForSentAsEnabled to $MessageCopyForSentAsEnabled failed: $($_.Exception.Message)" -Sev "Error"
-        return "set MessageCopyForSentAsEnabled to $MessageCopyForSentAsEnabled failed - $($_.Exception.Message)"
+        $null = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Set-Mailbox' -cmdParams @{Identity = $userid; MessageCopyForSentAsEnabled = $MessageCopyForSentAsEnabled }
+        $Result = "Successfully set MessageCopyForSentAsEnabled as $MessageCopyForSentAsEnabled on $($userid)."
+        Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message $Result -Sev 'Info'
+        return $Result
+    } catch {
+        $ErrorMessage = Get-CippException -Exception $_
+        $Result = "Failed to set MessageCopyForSentAsEnabled to $MessageCopyForSentAsEnabled - $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message $Result -Sev 'Error' -LogData $ErrorMessage
+        throw $Result
     }
 }
