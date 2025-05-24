@@ -1,12 +1,38 @@
 function Invoke-CIPPStandardSendFromAlias {
     <#
     .FUNCTIONALITY
-    Internal
+        Internal
+    .COMPONENT
+        (APIName) SendFromAlias
+    .SYNOPSIS
+        (Label) Allow users to send from their alias addresses
+    .DESCRIPTION
+        (Helptext) Enables the ability for users to send from their alias addresses.
+        (DocsDescription) Allows users to change the 'from' address to any set in their Azure AD Profile.
+    .NOTES
+        CAT
+            Exchange Standards
+        TAG
+        ADDEDCOMPONENT
+        IMPACT
+            Medium Impact
+        ADDEDDATE
+            2022-05-25
+        POWERSHELLEQUIVALENT
+            Set-Mailbox
+        RECOMMENDEDBY
+            "CIPP"
+        UPDATECOMMENTBLOCK
+            Run the Tools\Update-StandardsComments.ps1 script to update this comment block
+    .LINK
+        https://docs.cipp.app/user-documentation/tenant/standards/list-standards/exchange-standards#medium-impact
     #>
+
     param($Tenant, $Settings)
+
     $CurrentInfo = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-OrganizationConfig').SendFromAliasEnabled
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         if ($CurrentInfo -eq $false) {
             try {
                 New-ExoRequest -tenantid $Tenant -cmdlet 'Set-OrganizationConfig' -cmdParams @{ SendFromAliasEnabled = $true }
@@ -25,11 +51,13 @@ function Invoke-CIPPStandardSendFromAlias {
         if ($CurrentInfo -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Send from alias is enabled.' -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Send from alias is not enabled.' -sev Alert
+            Write-StandardsAlert -message 'Send from alias is not enabled' -object $CurrentInfo -tenant $tenant -standardName 'SendFromAlias' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message 'Send from alias is not enabled.' -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'SendFromAlias' -FieldValue $CurrentInfo -StoreAs bool -Tenant $tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.SendFromAlias' -FieldValue $CurrentInfo -Tenant $tenant
     }
 }
