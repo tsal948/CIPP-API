@@ -1,89 +1,107 @@
 function New-CIPPBackup {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         $backupType,
         $StorageOutput = 'default',
         $TenantFilter,
+        $ScheduledBackupValues,
         $APIName = 'CIPP Backup',
-        $ExecutingUser
+        $Headers
     )
 
     $BackupData = switch ($backupType) {
         #If backup type is CIPP, create CIPP backup.
-        'CIPP' { 
+        'CIPP' {
             try {
                 $BackupTables = @(
-                    'bpa'
+                    'AppPermissions'
+                    'AccessRoleGroups'
+                    'ApiClients'
+                    'CustomData'
+                    'CustomRoles'
                     'Config'
+                    'CommunityRepos'
                     'Domains'
+                    'GraphPresets'
+                    'GDAPRoles'
+                    'GDAPRoleTemplates'
                     'ExcludedLicenses'
                     'templates'
                     'standards'
                     'SchedulerConfig'
+                    'Extensions'
+                    'WebhookRules'
+                    'ScheduledTasks'
+                    'TenantProperties'
                 )
                 $CSVfile = foreach ($CSVTable in $BackupTables) {
                     $Table = Get-CippTable -tablename $CSVTable
-                    Get-CIPPAzDataTableEntity @Table
+                    Get-AzDataTableEntity @Table | Select-Object * -ExcludeProperty DomainAnalyser, table, Timestamp, ETag, Results | Select-Object *, @{l = 'table'; e = { $CSVTable } }
                 }
-                Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Created backup' -Sev 'Debug'
-                $CSVfile
                 $RowKey = 'CIPPBackup' + '_' + (Get-Date).ToString('yyyy-MM-dd-HHmm')
-                $entity = [PSCustomObject]@{
+                $CSVfile
+                $CSVFile = [string]($CSVfile | ConvertTo-Json -Compress -Depth 100)
+                $entity = @{
                     PartitionKey = 'CIPPBackup'
-                    RowKey       = $RowKey
+                    RowKey       = [string]$RowKey
                     TenantFilter = 'CIPPBackup'
-                    Backup       = [string]($CSVfile | ConvertTo-Json -Compress -Depth 100)
+                    Backup       = $CSVfile
                 }
                 $Table = Get-CippTable -tablename 'CIPPBackup'
                 try {
-                    $Result = Add-CIPPAzDataTableEntity @Table -entity $entity -Force
-                    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Created CIPP Backup' -Sev 'Debug'
+                    if ($PSCmdlet.ShouldProcess('CIPP Backup', 'Create')) {
+                        $null = Add-CIPPAzDataTableEntity @Table -Entity $entity -Force
+                        Write-LogMessage -headers $Headers -API $APINAME -message 'Created CIPP Backup' -Sev 'Debug'
+                    }
                 } catch {
-                    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Failed to create backup for CIPP: $($_.Exception.Message)" -Sev 'Error'
-                    [pscustomobject]@{'Results' = "Backup Creation failed: $($_.Exception.Message)" }
+                    $ErrorMessage = Get-CippException -Exception $_
+                    Write-LogMessage -headers $Headers -API $APINAME -message "Failed to create backup for CIPP: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
+                    [pscustomobject]@{'Results' = "Backup Creation failed: $($ErrorMessage.NormalizedError)" }
                 }
-               
+
             } catch {
-                Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Failed to create backup: $($_.Exception.Message)" -Sev 'Error'
-                [pscustomobject]@{'Results' = "Backup Creation failed: $($_.Exception.Message)" }
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -headers $Headers -API $APINAME -message "Failed to create backup: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
+                [pscustomobject]@{'Results' = "Backup Creation failed: $($ErrorMessage.NormalizedError)" }
             }
         }
 
         #If Backup type is ConditionalAccess, create Conditional Access backup.
-        'ConditionalAccess' { 
-            $ConditionalAccessPolicyOutput = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/policies' -tenantid $tenantfilter
-            $AllNamedLocations = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/identity/conditionalAccess/namedLocations' -tenantid $tenantfilter
-            switch ($StorageOutput) {
-                'default' {
-                    [PSCustomObject]@{
-                        ConditionalAccessPolicies = $ConditionalAccessPolicyOutput
-                        NamedLocations            = $AllNamedLocations
-                    }
+        'Scheduled' {
+            #Do a sub switch here based on the ScheduledBackupValues?
+            #Store output in tablestorage for Recovery
+            $RowKey = $TenantFilter + '_' + (Get-Date).ToString('yyyy-MM-dd-HHmm')
+            $entity = @{
+                PartitionKey = 'ScheduledBackup'
+                RowKey       = $RowKey
+                TenantFilter = $TenantFilter
+            }
+            Write-Information "Scheduled backup value psproperties: $(([pscustomobject]$ScheduledBackupValues).psobject.Properties)"
+            foreach ($ScheduledBackup in ([pscustomobject]$ScheduledBackupValues).psobject.Properties.Name) {
+                try {
+                    $BackupResult = New-CIPPBackupTask -Task $ScheduledBackup -TenantFilter $TenantFilter | ConvertTo-Json -Depth 100 -Compress | Out-String
+                    $entity[$ScheduledBackup] = "$BackupResult"
+                } catch {
+                    Write-Information "Failed to create backup for $ScheduledBackup - $($_.Exception.Message)"
                 }
-                'table' {
-                    #Store output in tablestorage for Recovery
-                    $RowKey = $TenantFilter + '_' + (Get-Date).ToString('yyyy-MM-dd-HHmm')
-                    $entity = [PSCustomObject]@{
-                        PartitionKey   = 'ConditionalAccessBackup'
-                        RowKey         = $RowKey
-                        TenantFilter   = $TenantFilter
-                        Policies       = [string]($ConditionalAccessPolicyOutput | ConvertTo-Json -Compress -Depth 10)
-                        NamedLocations = [string]($AllNamedLocations | ConvertTo-Json -Compress -Depth 10)
-                    }
-                    $Table = Get-CippTable -tablename 'ConditionalAccessBackup'
-                    try {
-                        $Result = Add-CIPPAzDataTableEntity @Table -entity $entity -Force
-                        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Created backup for Conditional Access Policies' -Sev 'Debug'
-                        $Result
-                    } catch {
-                        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Failed to create backup for Conditional Access Policies: $($_.Exception.Message)" -Sev 'Error'
-                        [pscustomobject]@{'Results' = "Backup Creation failed: $($_.Exception.Message)" }
-                    }
-                }
+            }
+            $Table = Get-CippTable -tablename 'ScheduledBackup'
+            try {
+                $null = Add-CIPPAzDataTableEntity @Table -entity $entity -Force
+                Write-LogMessage -headers $Headers -API $APINAME -message 'Created backup' -Sev 'Debug'
+                $State = 'Backup finished successfully'
+            } catch {
+                $State = 'Failed to write backup to table storage'
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -headers $Headers -API $APINAME -message "Failed to create tenant backup: $($ErrorMessage.NormalizedError)" -Sev 'Error' -LogData $ErrorMessage
+                [pscustomobject]@{'Results' = "Backup Creation failed: $($ErrorMessage.NormalizedError)" }
             }
         }
 
     }
-    return $BackupData
+    return @([pscustomobject]@{
+            BackupName  = $RowKey
+            BackupState = $State
+        })
 }
 

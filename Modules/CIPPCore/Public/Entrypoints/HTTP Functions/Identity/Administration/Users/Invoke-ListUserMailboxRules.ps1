@@ -10,38 +10,29 @@ Function Invoke-ListUserMailboxRules {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -Headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
 
     # Interact with query parameters or the body of the request.
+    $TenantFilter = $Request.Query.tenantFilter
+    $UserID = $Request.Query.UserID
     try {
-        $TenantFilter = $Request.Query.TenantFilter
-        $UserID = $Request.Query.UserID
-        $GraphRequest = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-InboxRule' -cmdParams @{mailbox = $UserID } | Select-Object
-        @{ Name = 'DisplayName'; Expression = { $_.displayName } },
-        @{ Name = 'Description'; Expression = { $_.Description } },
-        @{ Name = 'Redirect To'; Expression = { $_.RedirectTo } },
-        @{ Name = 'Copy To Folder'; Expression = { $_.CopyToFolder } },
-        @{ Name = 'Move To Folder'; Expression = { $_.MoveToFolder } },
-        @{ Name = 'Soft Delete Message'; Expression = { $_.SoftDeleteMessage } },
-        @{ Name = 'Delete Message'; Expression = { $_.DeleteMessage } }
+        $UserEmail = if ([string]::IsNullOrWhiteSpace($Request.Query.userEmail)) { $UserID } else { $Request.Query.userEmail }
+        $Result = New-ExoRequest -Anchor $UserID -tenantid $TenantFilter -cmdlet 'Get-InboxRule' -cmdParams @{mailbox = $UserID; IncludeHidden = $true } |
+            Where-Object { $_.Name -ne 'Junk E-Mail Rule' -and $_.Name -notlike 'Microsoft.Exchange.OOF.*' } | Select-Object * -ExcludeProperty RuleIdentity
+        $StatusCode = [HttpStatusCode]::OK
     } catch {
-        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message "Failed to retrieve mailbox rules $($request.query.id): $($_.Exception.message) " -Sev 'Error' -tenant $TenantFilter
-        # Associate values to output bindings by calling 'Push-OutputBinding'.
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-                StatusCode = '500'
-                Body       = $(Get-NormalizedError -message $_.Exception.message)
-            })
+        $ErrorMessage = Get-CippException -Exception $_
+        $Result = "Failed to retrieve mailbox rules for $UserEmail : Error: $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -Headers $Headers -tenant $TenantFilter -API $APIName -message $Result -Sev Error -LogData $ErrorMessage
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
     # Associate values to output bindings by calling 'Push-OutputBinding'.
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = @($GraphRequest)
+            StatusCode = $StatusCode
+            Body       = @($Result)
         })
 
 }
