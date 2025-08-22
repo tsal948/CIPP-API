@@ -1,6 +1,6 @@
 using namespace System.Net
 
-Function Invoke-ExecGraphExplorerPreset {
+function Invoke-ExecGraphExplorerPreset {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -10,26 +10,27 @@ Function Invoke-ExecGraphExplorerPreset {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
 
-    $Username = ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($request.headers.'x-ms-client-principal')) | ConvertFrom-Json).userDetails
-    # Write to the Azure Functions log stream.
-    Write-Host 'PowerShell HTTP trigger function processed a request.'
+    $Action = $Request.Body.action ?? ''
 
+    Write-Information ($Request.Body | ConvertTo-Json -Depth 10)
 
-    switch ($Request.Body.Action) {
+    switch ($Action) {
         'Copy' {
-            $Id = (New-Guid).Guid
+            $Id = $Request.Body.preset.id ? $Request.Body.preset.id : (New-Guid).Guid
         }
         'Save' {
-            $Id = $Request.Body.preset.reportTemplate.value
+            $Id = $Request.Body.preset.id
         }
         'Delete' {
-            $Id = $Request.Body.preset.reportTemplate.value
+            $Id = $Request.Body.preset.id
         }
         default {
-            $Request.Body.Action = 'Copy'
+            $Action = 'Copy'
             $Id = (New-Guid).Guid
         }
     }
@@ -38,6 +39,36 @@ Function Invoke-ExecGraphExplorerPreset {
 
     if ($params.'$select'.value) {
         $params.'$select' = ($params.'$select').value -join ','
+    }
+
+    if (!$Request.Body.preset.name -and $Action -ne 'Delete') {
+        $Message = 'Error: Preset name is required'
+        $StatusCode = [HttpStatusCode]::BadRequest
+        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                StatusCode = $StatusCode
+                Body       = @{
+                    Results = @(@{
+                        resultText = $Message
+                        state      = 'error'
+                    })
+                }
+            })
+        return
+    }
+
+    if (!$Request.Body.preset.endpoint -and $Action -ne 'Delete') {
+        $Message = 'Error: Preset endpoint is required'
+        $StatusCode = [HttpStatusCode]::BadRequest
+        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+                StatusCode = $StatusCode
+                Body       = @{
+                    Results = @(@{
+                        resultText = $Message
+                        state      = 'error'
+                    })
+                }
+            })
+        return
     }
 
     $Preset = [PSCustomObject]@{
@@ -53,20 +84,21 @@ Function Invoke-ExecGraphExplorerPreset {
     try {
         $Success = $false
         $Table = Get-CIPPTable -TableName 'GraphPresets'
-        $Message = '{0} preset succeeded' -f $Request.Body.Action
-        if ($Request.Body.Action -eq 'Copy') {
-            Add-CIPPAzDataTableEntity @Table -Entity $Preset
+        $Message = '{0} preset succeeded' -f $Action
+        if ($Action -eq 'Copy') {
+            Add-CIPPAzDataTableEntity @Table -Entity $Preset -Force
             $Success = $true
         } else {
             $Entity = Get-CIPPAzDataTableEntity @Table -Filter "RowKey eq '$Id'"
             if ($Entity.Owner -eq $Username ) {
-                if ($Request.Body.Action -eq 'Delete') {
-                    Remove-AzDataTableEntity @Table -Entity $Entity
-                } elseif ($Request.Body.Action -eq 'Save') {
+                if ($Action -eq 'Delete') {
+                    Remove-AzDataTableEntity -Force @Table -Entity $Entity
+                } elseif ($Action -eq 'Save') {
                     Add-CIPPAzDataTableEntity @Table -Entity $Preset -Force
                 }
                 $Success = $true
             } else {
+                Write-Host "username in table: $($Entity.Owner). Username in request: $Username"
                 $Message = 'Error: You can only modify your own presets.'
                 $Success = $false
             }
@@ -82,8 +114,10 @@ Function Invoke-ExecGraphExplorerPreset {
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @{
-                Results = $Message
-                Success = $Success
+                Results = @(@{
+                    resultText = $Message
+                    state      = if ($Success) { 'success' } else { 'error' }
+                })
             }
         })
 }
