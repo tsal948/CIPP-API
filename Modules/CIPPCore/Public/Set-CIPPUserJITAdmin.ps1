@@ -21,12 +21,15 @@ function Set-CIPPUserJITAdmin {
     .PARAMETER Expiration
     DateTime for expiration
 
+    .PARAMETER Reason
+    Reason for JIT admin assignment. Defaults to 'No reason provided' as due to backwards compatibility this is not a mandatory field.
+
     .EXAMPLE
-    Set-CIPPUserJITAdmin -TenantFilter 'contoso.onmicrosoft.com' -User @{UserPrincipalName = 'jit@contoso.onmicrosoft.com'} -Roles @('62e90394-69f5-4237-9190-012177145e10') -Action 'AddRoles' -Expiration (Get-Date).AddDays(1)
+    Set-CIPPUserJITAdmin -TenantFilter 'contoso.onmicrosoft.com' -Headers@{UserPrincipalName = 'jit@contoso.onmicrosoft.com'} -Roles @('62e90394-69f5-4237-9190-012177145e10') -Action 'AddRoles' -Expiration (Get-Date).AddDays(1) -Reason 'Emergency access'
 
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
-    Param(
+    param(
         [Parameter(Mandatory = $true)]
         [string]$TenantFilter,
 
@@ -39,7 +42,9 @@ function Set-CIPPUserJITAdmin {
         [ValidateSet('Create', 'AddRoles', 'RemoveRoles', 'DeleteUser', 'DisableUser')]
         [string]$Action,
 
-        [datetime]$Expiration
+        [datetime]$Expiration,
+
+        [string]$Reason = 'No reason provided'
     )
 
     if ($PSCmdlet.ShouldProcess("User: $($User.UserPrincipalName)", "Action: $Action")) {
@@ -50,6 +55,8 @@ function Set-CIPPUserJITAdmin {
         switch ($Action) {
             'Create' {
                 $Password = New-passwordString
+                $Schema = Get-CIPPSchemaExtensions | Where-Object { $_.id -match '_cippUser' } | Select-Object -First 1
+
                 $Body = @{
                     givenName         = $User.FirstName
                     surname           = $User.LastName
@@ -61,6 +68,11 @@ function Set-CIPPUserJITAdmin {
                         forceChangePasswordNextSignIn        = $true
                         forceChangePasswordNextSignInWithMfa = $false
                         password                             = $Password
+                    }
+                    $Schema.id        = @{
+                        jitAdminEnabled    = $false
+                        jitAdminExpiration = $Expiration.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                        jitAdminReason     = $Reason
                     }
                 }
                 $Json = ConvertTo-Json -Depth 5 -InputObject $Body
@@ -77,8 +89,9 @@ function Set-CIPPUserJITAdmin {
                         password          = $Password
                     }
                 } catch {
-                    Write-Information "Error creating user: $($_.Exception.Message)"
-                    throw $_.Exception.Message
+                    $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+                    Write-Information "Error creating user: $ErrorMessage"
+                    throw $ErrorMessage
                 }
             }
             'AddRoles' {
@@ -102,7 +115,7 @@ function Set-CIPPUserJITAdmin {
                     } catch {}
                 }
 
-                Set-CIPPUserJITAdminProperties -TenantFilter $TenantFilter -UserId $UserObj.id -Enabled -Expiration $Expiration | Out-Null
+                Set-CIPPUserJITAdminProperties -TenantFilter $TenantFilter -UserId $UserObj.id -Enabled -Expiration $Expiration -Reason $Reason | Out-Null
                 return "Added admin roles to user $($UserObj.displayName) ($($UserObj.userPrincipalName))"
             }
             'RemoveRoles' {
@@ -119,7 +132,8 @@ function Set-CIPPUserJITAdmin {
                     $null = New-GraphPOSTRequest -type DELETE -uri "https://graph.microsoft.com/beta/users/$($UserObj.id)" -tenantid $TenantFilter
                     return "Deleted user $($UserObj.displayName) ($($UserObj.userPrincipalName)) with id $($UserObj.id)"
                 } catch {
-                    return "Error deleting user $($UserObj.displayName) ($($UserObj.userPrincipalName)): $($_.Exception.Message)"
+                    $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+                    return "Error deleting user $($UserObj.displayName) ($($UserObj.userPrincipalName)): $ErrorMessage"
                 }
             }
             'DisableUser' {
@@ -135,7 +149,9 @@ function Set-CIPPUserJITAdmin {
                     Set-CIPPUserJITAdminProperties -TenantFilter $TenantFilter -UserId $User.UserPrincipalName -Clear | Out-Null
                     return "Disabled user $($UserObj.displayName) ($($UserObj.userPrincipalName))"
                 } catch {
-                    return "Error disabling user $($UserObj.displayName) ($($UserObj.userPrincipalName)): $($_.Exception.Message)"
+                    $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+                    return "Error disabling user $($UserObj.displayName) ($($UserObj.userPrincipalName)): $ErrorMessage"
+
                 }
             }
         }

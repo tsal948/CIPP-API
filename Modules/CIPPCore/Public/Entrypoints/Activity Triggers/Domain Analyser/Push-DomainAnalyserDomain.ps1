@@ -6,7 +6,7 @@ function Push-DomainAnalyserDomain {
     param($Item)
     $DomainTable = Get-CippTable -tablename 'Domains'
     $Filter = "PartitionKey eq 'TenantDomains' and RowKey eq '{0}'" -f $Item.RowKey
-    $DomainObject = Get-CIPPAzDataTableEntity @DomainTable -Filter $Filter
+    $DomainObject = Get-CIPPAzDataTableEntity @DomainTable -Filter $Filter | Select-Object * -ExcludeProperty table
 
     try {
         $ConfigTable = Get-CippTable -tablename Config
@@ -35,7 +35,7 @@ function Push-DomainAnalyserDomain {
     try {
         $Tenant = $DomainObject.TenantDetails | ConvertFrom-Json -ErrorAction Stop
     } catch {
-        $Tenant = @{Tenant = 'None' }
+        $Tenant = @{ Tenant = 'None' }
     }
 
     $Result = [PSCustomObject]@{
@@ -59,6 +59,7 @@ function Push-DomainAnalyserDomain {
         MailProvider         = ''
         DKIMEnabled          = ''
         DKIMRecords          = ''
+        MSCNAMEDKIMSelectors = ''
         Score                = ''
         MaximumScore         = 160
         ScorePercentage      = ''
@@ -82,7 +83,7 @@ function Push-DomainAnalyserDomain {
     # Setup Score Explanation
     $ScoreExplanation = [System.Collections.Generic.List[string]]::new()
 
-    # Check MX Record
+    #Region MX Check
     $MXRecord = Read-MXRecord -Domain $Domain -ErrorAction Stop
 
     $Result.ExpectedSPFRecord = $MXRecord.ExpectedInclude
@@ -105,8 +106,9 @@ function Push-DomainAnalyserDomain {
     } else {
         $Result.MailProvider = $MXRecord.MailProvider.Name
     }
+    #EndRegion MX Check
 
-    # Get SPF Record
+    #Region SPF Check
     try {
         $SPFRecord = Read-SpfRecord -Domain $Domain -ErrorAction Stop
         if ($SPFRecord.RecordCount -gt 0) {
@@ -123,15 +125,13 @@ function Push-DomainAnalyserDomain {
     } catch {
         $Message = 'SPF Error'
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
-        return $Message
     }
 
-    # Check SPF Record
-    $Result.SPFPassAll = $false
 
     # Check warning + fail counts to ensure all tests pass
     #$SPFWarnCount = $SPFRecord.ValidationWarns | Measure-Object | Select-Object -ExpandProperty Count
     $SPFFailCount = $SPFRecord.ValidationFails | Measure-Object | Select-Object -ExpandProperty Count
+    $Result.SPFPassAll = $false
 
     if ($SPFFailCount -eq 0) {
         $ScoreDomain += $Scores.SPFCorrectAll
@@ -139,8 +139,9 @@ function Push-DomainAnalyserDomain {
     } else {
         $ScoreExplanation.Add('SPF record did not pass validation') | Out-Null
     }
+    #EndRegion SPF Check
 
-    # Get DMARC Record
+    #Region DMARC Check
     try {
         $DMARCPolicy = Read-DmarcPolicy -Domain $Domain -ErrorAction Stop
 
@@ -186,10 +187,11 @@ function Push-DomainAnalyserDomain {
     } catch {
         $Message = 'DMARC Error'
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
-        return $Message
+        #return $Message
     }
+    #EndRegion DMARC Check
 
-    # DNS Sec Check
+    #Region DNS Sec Check
     try {
         $DNSSECResult = Test-DNSSEC -Domain $Domain -ErrorAction Stop
         $DNSSECFailCount = $DNSSECResult.ValidationFails | Measure-Object | Select-Object -ExpandProperty Count
@@ -204,10 +206,11 @@ function Push-DomainAnalyserDomain {
     } catch {
         $Message = 'DNSSEC Error'
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
-        return $Message
+        #return $Message
     }
+    #EndRegion DNS Sec Check
 
-    # DKIM Check
+    #Region DKIM Check
     try {
         $DkimParams = @{
             Domain                       = $Domain
@@ -215,6 +218,12 @@ function Push-DomainAnalyserDomain {
         }
         if (![string]::IsNullOrEmpty($DomainObject.DkimSelectors)) {
             $DkimParams.Selectors = $DomainObject.DkimSelectors | ConvertFrom-Json
+        }
+        # Check if its a onmicrosoft.com domain and add special selectors for these
+        if ($Domain -match 'onmicrosoft.com' -and $Domain -notmatch 'mail.onmicrosoft.com') {
+            $DKIMSelector1Value = "selector1-$($Domain -replace '\.', '-' )"
+            $DKIMSelector2Value = "selector2-$($Domain -replace '\.', '-' )"
+            $DkimParams.Add('Selectors', @("$DKIMSelector1Value", "$DKIMSelector2Value"))
         }
 
         $DkimRecord = Read-DkimRecord @DkimParams -ErrorAction Stop
@@ -233,14 +242,79 @@ function Push-DomainAnalyserDomain {
     } catch {
         $Message = 'DKIM Exception'
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
-        return $Message
+        #return $Message
     }
+    #EndRegion DKIM Check
+
+    #Region MSCNAME DKIM Records
+    # Get Microsoft DKIM CNAME selector Records
+    # Ugly, but i needed to create a scope/loop i could break out of without breaking the rest of the function
+    foreach ($d in $Domain) {
+        try {
+            # Test if DKIM is enabled, skip domain if it is
+            if ($Result.DKIMEnabled -eq $true) {
+                continue
+            }
+            # Test if its a onmicrosoft.com domain, skip domain if it is
+            if ($Domain -match 'onmicrosoft.com') {
+                continue
+            }
+            # Test if there are already MSCNAME values set, skip domain if there is
+            if ($null -ne $DomainObject.DomainAnalyser) {
+                $CurrentMSCNAMEInfo = ConvertFrom-Json $DomainObject.DomainAnalyser -Depth 10
+                if (![string]::IsNullOrWhiteSpace($CurrentMSCNAMEInfo.MSCNAMEDKIMSelectors.selector1.Value) -and
+                    ![string]::IsNullOrWhiteSpace($CurrentMSCNAMEInfo.MSCNAMEDKIMSelectors.selector2.Value)) {
+                    $Result.MSCNAMEDKIMSelectors = $CurrentMSCNAMEInfo.MSCNAMEDKIMSelectors
+                    continue
+                }
+            }
+
+            # Get the DKIM record from EXO. This is the only way to get the correct values for the MSCNAME records since the new format was introduced in May 2025.
+            $DKIM = (New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'Get-DkimSigningConfig' -Select 'Domain,Selector1CNAME,Selector2CNAME') | Where-Object { $_.Domain -eq $Domain }
+
+            # If no DKIM signing record is found, create a new disabled one
+            if ($null -eq $DKIM) {
+                Write-Information 'No DKIM record found in EXO - Creating new signing'
+                $NewDKIMSigningRequest = New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'New-DkimSigningConfig' -cmdParams @{  KeySize = 2048; DomainName = $Domain; Enabled = $false }
+                $Selector1Value = $NewDKIMSigningRequest.Selector1CNAME
+                $Selector2Value = $NewDKIMSigningRequest.Selector2CNAME
+            } else {
+                $Selector1Value = $DKIM.Selector1CNAME
+                $Selector2Value = $DKIM.Selector2CNAME
+            }
+
+
+            # Create the MSCNAME object
+            $MSCNAMERecords = [PSCustomObject]@{
+                Domain    = $Domain
+                selector1 = @{
+                    Hostname = 'selector1._domainkey'
+                    Value    = $Selector1Value
+                }
+                selector2 = @{
+                    Hostname = 'selector2._domainkey'
+                    Value    = $Selector2Value
+                }
+            }
+            $Result.MSCNAMEDKIMSelectors = $MSCNAMERecords
+        } catch {
+            $ErrorMessage = Get-CippException -Exception $_
+            Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "MS CNAME DKIM error: $($ErrorMessage.NormalizedError)" -LogData $ErrorMessage -sev Error
+        }
+    }
+    #EndRegion MSCNAME DKIM Records
     # Final Score
     $Result.Score = $ScoreDomain
     $Result.ScorePercentage = [int](($Result.Score / $Result.MaximumScore) * 100)
     $Result.ScoreExplanation = ($ScoreExplanation) -join ', '
 
-    $DomainObject.DomainAnalyser = ($Result | ConvertTo-Json -Compress).ToString()
+    $Json = (ConvertTo-Json -InputObject $Result -Depth 5 -Compress).ToString()
+
+    if ($DomainObject.PSObject.Properties.Name -notcontains 'DomainAnalyser') {
+        $DomainObject | Add-Member -MemberType NoteProperty -Name DomainAnalyser -Value $Json
+    } else {
+        $DomainObject.DomainAnalyser = $Json
+    }
 
     try {
         $DomainTable.Entity = $DomainObject
