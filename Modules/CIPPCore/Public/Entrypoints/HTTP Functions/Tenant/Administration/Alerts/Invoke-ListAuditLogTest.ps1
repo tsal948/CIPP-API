@@ -1,23 +1,21 @@
 function Invoke-ListAuditLogTest {
     <#
     .FUNCTIONALITY
-    Entrypoint
+    Entrypoint,AnyTenant
 
     .ROLE
     Tenant.Alert.Read
     #>
     Param($Request, $TriggerMetadata)
-
     $AuditLogQuery = @{
         TenantFilter = $Request.Query.TenantFilter
-        LogType      = $Request.Query.LogType
-        ShowAll      = $true
+        SearchId     = $Request.Query.SearchId
     }
     try {
         $TestResults = Test-CIPPAuditLogRules @AuditLogQuery
     } catch {
         $Body = Get-CippException -Exception $_
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::InternalServerError
                 Body       = $Body
             })
@@ -33,7 +31,7 @@ function Invoke-ListAuditLogTest {
             MatchedRules = $TestResults.MatchedRules
         }
     }
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Body
         })
