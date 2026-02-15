@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-AddPolicy {
+function Invoke-AddPolicy {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -10,112 +8,92 @@ Function Invoke-AddPolicy {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    Write-LogMessage -user $Request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-    $Tenants = ($Request.Body | Select-Object Select_*).psobject.properties.value
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+    $Tenants = $Request.Body.tenantFilter.value ? $Request.Body.tenantFilter.value : $Request.Body.tenantFilter
     if ('AllTenants' -in $Tenants) { $Tenants = (Get-Tenants).defaultDomainName }
-    $displayname = $Request.Body.displayName
+
+    $DisplayName = $Request.Body.displayName
     $description = $Request.Body.Description
     $AssignTo = if ($Request.Body.AssignTo -ne 'on') { $Request.Body.AssignTo }
+    $ExcludeGroup = $Request.Body.excludeGroup
+    $AssignmentFilterSelection = $Request.Body.AssignmentFilterName ?? $Request.Body.assignmentFilter
+    $AssignmentFilterType = $Request.Body.AssignmentFilterType ?? $Request.Body.assignmentFilterType
+    $AssignmentFilterName = switch ($AssignmentFilterSelection) {
+        { $_ -is [string] } { $_; break }
+        { $_ -and $_.PSObject.Properties['value'] } { $_.value; break }
+        { $_ -and $_.PSObject.Properties['displayName'] } { $_.displayName; break }
+        { $_ -and $_.PSObject.Properties['label'] } { $_.label; break }
+        default { $null }
+    }
+    $Request.Body.customGroup ? ($AssignTo = $Request.Body.customGroup) : $null
     $RawJSON = $Request.Body.RAWJson
 
-    $results = foreach ($Tenant in $tenants) {
-        if ($Request.Body.replacemap.$tenant) {
-        ([pscustomobject]$Request.Body.replacemap.$tenant).psobject.properties | ForEach-Object { $RawJson = $RawJson -replace $_.name, $_.value }
+    $Results = foreach ($Tenant in $Tenants) {
+        if ($Request.Body.replacemap.$Tenant) {
+            ([pscustomobject]$Request.Body.replacemap.$Tenant).PSObject.Properties | ForEach-Object { $RawJSON = $RawJSON -replace $_.name, $_.value }
         }
+
+        $reusableSettings = $Request.Body.ReusableSettings ?? $Request.Body.reusableSettings
+        if (-not $reusableSettings -or $reusableSettings.Count -eq 0) {
+            try {
+                $templatesTable = Get-CippTable -tablename 'templates'
+                $templateEntity = Get-CIPPAzDataTableEntity @templatesTable -Filter "PartitionKey eq 'IntuneTemplate' and RowKey eq '$($Request.Body.TemplateID ?? $Request.Body.TemplateId ?? $Request.Body.TemplateGuid ?? $Request.Body.TemplateGUID)'" | Select-Object -First 1
+                if (-not $templateEntity -and $DisplayName) {
+                    $templateEntity = Get-CIPPAzDataTableEntity @templatesTable -Filter "PartitionKey eq 'IntuneTemplate'" | Where-Object { ($_.JSON | ConvertFrom-Json -ErrorAction SilentlyContinue).Displayname -eq $DisplayName } | Select-Object -First 1
+                }
+                if ($templateEntity) {
+                    $templateObj = $templateEntity.JSON | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($templateObj.ReusableSettings) { $reusableSettings = $templateObj.ReusableSettings }
+                    if ($templateObj.RAWJson) { $RawJSON = $templateObj.RAWJson }
+                }
+            } catch {}
+        }
+
+        if (-not $reusableSettings -and $RawJSON) {
+            try {
+                # Discover referenced reusable settings from the policy JSON when none were supplied
+                $reusableResult = Get-CIPPReusableSettingsFromPolicy -PolicyJson $RawJSON -Tenant $Tenant -Headers $Headers -APIName $APIName
+                if ($reusableResult.ReusableSettings) { $reusableSettings = $reusableResult.ReusableSettings }
+            } catch {}
+        }
+
+        $reusableSettingsForSet = $reusableSettings
+        if ($Request.Body.TemplateType -eq 'Catalog') {
+            $syncResult = Sync-CIPPReusablePolicySettings -TemplateInfo ([pscustomobject]@{ RawJSON = $RawJSON; ReusableSettings = $reusableSettings }) -Tenant $Tenant
+            if ($syncResult.RawJSON) { $RawJSON = $syncResult.RawJSON }
+            $reusableSettingsForSet = $null # helper already created/updated reusable settings and rewrote JSON
+        }
+
         try {
-            switch ($Request.Body.TemplateType) {
-                'AppProtection' {
-                    $PlatformType = 'deviceAppManagement'
-                    $TemplateType = ($RawJSON | ConvertFrom-Json).'@odata.type' -replace '#microsoft.graph.', ''
-                    $TemplateTypeURL = "$($TemplateType)s"
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$TemplateTypeURL" -tenantid $tenant
-                    if ($displayname -in $CheckExististing.displayName) {
-                        Throw "Policy with Display Name $($Displayname) Already exists"
-                    }
-                    $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceAppManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
-                }
-                'deviceCompliancePolicies' {
-                    $TemplateTypeURL = 'deviceCompliancePolicies'
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    if ($displayname -in $CheckExististing.displayName) {
-                        Throw "Policy with Display Name $($Displayname) Already exists"
-                    }
-                    $JSON = $RawJSON | ConvertFrom-Json | Select-Object * -ExcludeProperty id, createdDateTime, lastModifiedDateTime, version, 'scheduledActionsForRule@odata.context', '@odata.context'
-                    $JSON.scheduledActionsForRule = @($JSON.scheduledActionsForRule | Select-Object * -ExcludeProperty 'scheduledActionConfigurations@odata.context')
-                    $RawJSON = ConvertTo-Json -InputObject $JSON -Depth 20 -Compress
-                    Write-Host $RawJSON
-                    $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJson
-                }
-                'Admin' {
-                    $TemplateTypeURL = 'groupPolicyConfigurations'
-                    $CreateBody = '{"description":"' + $description + '","displayName":"' + $displayname + '","roleScopeTagIds":["0"]}'
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    if ($displayname -in $CheckExististing.displayName) {
-                        Throw "Policy with Display Name $($Displayname) Already exists"
-                    }
-                    $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $CreateBody
-                    $UpdateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL('$($CreateRequest.id)')/updateDefinitionValues" -tenantid $tenant -type POST -body $RawJSON
-                }
-                'Device' {
-                    $TemplateTypeURL = 'deviceConfigurations'
-                    $PolicyName = ($RawJSON | ConvertFrom-Json).displayName
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    Write-Host $PolicyName
-                    if ($PolicyName -in $CheckExististing.displayName) {
-                        Throw "Policy with Display Name $($Displayname) Already exists"
-                    }
-                    $PolicyFile = $RawJSON | ConvertFrom-Json
-                    $Null = $PolicyFile | Add-Member -MemberType NoteProperty -Name 'description' -Value $description -Force
-                    $null = $PolicyFile | Add-Member -MemberType NoteProperty -Name 'displayName' -Value $displayname -Force
-                    $RawJSON = ConvertTo-Json -InputObject $PolicyFile -Depth 20
-                    $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
-                }
-                'Catalog' {
-                    $TemplateTypeURL = 'configurationPolicies'
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    $PolicyName = ($RawJSON | ConvertFrom-Json).Name
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    if ($PolicyName -in $CheckExististing.name) {
-                        Throw "Policy with Display Name $($Displayname) Already exists"
-                    }
-                    $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
-                }
-                'windowsDriverUpdateProfiles' {
-                    $TemplateTypeURL = 'windowsDriverUpdateProfiles'
-                    $PolicyName = ($RawJSON | ConvertFrom-Json).Name
-                    $CheckExististing = New-GraphGETRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant
-                    if ($PolicyName -in $CheckExististing.name) {
-                        $ExistingID = $CheckExististing | Where-Object -Property Name -EQ $PolicyName
-                        $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL/$($ExistingID.Id)" -tenantid $tenant -type PUT -body $RawJSON
-
-                    } else {
-                        $CreateRequest = New-GraphPOSTRequest -uri "https://graph.microsoft.com/beta/deviceManagement/$TemplateTypeURL" -tenantid $tenant -type POST -body $RawJSON
-                        Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Added policy $($PolicyName) via template" -Sev 'info'
-                    }
-                }
-
+            Write-Host 'Calling Adding policy'
+            $params = @{
+                TemplateType     = $Request.Body.TemplateType
+                Description      = $description
+                DisplayName      = $DisplayName
+                RawJSON          = $RawJSON
+                ReusableSettings = $reusableSettingsForSet
+                AssignTo         = $AssignTo
+                ExcludeGroup     = $ExcludeGroup
+                tenantFilter     = $Tenant
+                Headers          = $Headers
+                APIName          = $APIName
             }
-            Write-LogMessage -user $Request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Added policy $($Displayname)" -Sev 'Info'
-            if ($AssignTo) {
-                Set-CIPPAssignedPolicy -GroupName $AssignTo -PolicyId $CreateRequest.id -Type $TemplateTypeURL -TenantFilter $tenant -PlatformType $PlatformType
+
+            if (-not [string]::IsNullOrWhiteSpace($AssignmentFilterName)) {
+                $params.AssignmentFilterName = $AssignmentFilterName
+                $params.AssignmentFilterType = [string]::IsNullOrWhiteSpace($AssignmentFilterType) ? 'include' : $AssignmentFilterType
             }
-            "Successfully added policy for $($Tenant)"
+
+            Set-CIPPIntunePolicy @params
         } catch {
-            "Failed to add policy for $($Tenant): $($_.Exception.Message)"
-            Write-LogMessage -user $Request.headers.'x-ms-client-principal' -API $APINAME -tenant $($Tenant) -message "Failed adding policy $($Displayname). Error: $($_.Exception.Message)" -Sev 'Error'
+            "$($_.Exception.Message)"
             continue
         }
-
     }
 
-    $body = [pscustomobject]@{'Results' = @($results) }
-
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+            Body       = @{'Results' = @($Results) }
         })
-
 }
