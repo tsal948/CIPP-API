@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-AddScheduledItem {
+function Invoke-AddScheduledItem {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,17 +7,48 @@ Function Invoke-AddScheduledItem {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-    if ($Request.query.hidden -eq $null) {
+    if ($null -eq $Request.Query.hidden) {
         $hidden = $false
     } else {
         $hidden = $true
     }
-    $Result = Add-CIPPScheduledTask -Task $Request.body -hidden $hidden
-    Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message $Result -Sev 'Info'
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    $DisallowDuplicateName = $Request.Query.DisallowDuplicateName ?? $Request.Body.DisallowDuplicateName
+
+    $HeaderProperties = @('x-ms-client-principal', 'x-ms-client-principal-id', 'x-ms-client-principal-name', 'x-forwarded-for')
+    $Headers = $Request.Headers | Select-Object -Property $HeaderProperties -ErrorAction SilentlyContinue
+
+    $Table = Get-CIPPTable -TableName 'ScheduledTasks'
+
+    if ($Request.Body.RowKey) {
+        $Filter = "PartitionKey eq 'ScheduledTask' and RowKey eq '$($Request.Body.RowKey)'"
+        $ExistingTask = (Get-CIPPAzDataTableEntity @Table -Filter $Filter)
+    }
+
+    if ($ExistingTask -and $Request.Body.RunNow -eq $true) {
+        $RerunParams = @{
+            TenantFilter = $ExistingTask.Tenant
+            Type         = 'ScheduledTask'
+            API          = $Request.Body.RowKey
+            Clear        = $true
+        }
+        $null = Test-CIPPRerun @RerunParams
+        $Result = Add-CIPPScheduledTask -RowKey $Request.Body.RowKey -RunNow -Headers $Headers
+    } else {
+        $ScheduledTask = @{
+            Task                  = $Request.Body
+            Headers               = $Headers
+            Hidden                = $hidden
+            DisallowDuplicateName = $DisallowDuplicateName
+            DesiredStartTime      = $Request.Body.DesiredStartTime
+        }
+        if ($Request.Body.RunNow -eq $true) {
+            $ScheduledTask.RunNow = $true
+        }
+        $Result = Add-CIPPScheduledTask @ScheduledTask
+    }
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @{ Results = $Result }
         })
-
 }

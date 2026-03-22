@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecOffboardUser {
+function Invoke-ExecOffboardUser {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,46 +7,51 @@ Function Invoke-ExecOffboardUser {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-    if ($Request.body.user.value) { $AllUsers = $Request.body.user.value } else { $AllUsers = @($Request.body.user) }
+    $AllUsers = $Request.Body.user.value
+    $TenantFilter = $request.Body.tenantFilter.value ? $request.Body.tenantFilter.value : $request.Body.tenantFilter
+    $OffboardingOptions = $Request.Body | Select-Object * -ExcludeProperty user, tenantFilter, Scheduled
+
+    $StatusCode = [HttpStatusCode]::OK
     $Results = foreach ($username in $AllUsers) {
         try {
-            $APIName = 'ExecOffboardUser'
-            Write-LogMessage -user $request.headers.'x-ms-client-principal' -API $APINAME -message 'Accessed this API' -Sev 'Debug'
-
-            $Tenantfilter = $request.body.tenantfilter
-            if ($Request.body.Scheduled.enabled) {
-                $taskObject = [PSCustomObject]@{
-                    TenantFilter  = $Tenantfilter
-                    Name          = "Offboarding: $Username"
-                    Command       = @{
-                        value = 'Invoke-CIPPOffboardingJob'
-                    }
-                    Parameters    = @{
-                        Username     = $Username
-                        APIName      = 'Scheduled Offboarding'
-                        options      = $request.body
-                        RunScheduled = $true
-                    }
-                    ScheduledTime = $Request.body.scheduled.date
-                    PostExecution = @{
-                        Webhook = [bool]$Request.Body.PostExecution.webhook
-                        Email   = [bool]$Request.Body.PostExecution.email
-                        PSA     = [bool]$Request.Body.PostExecution.psa
-                    }
+            $Headers = $Request.Headers
+            $taskObject = [PSCustomObject]@{
+                TenantFilter  = $TenantFilter
+                Name          = "Offboarding: $Username"
+                Command       = @{
+                    value = 'Invoke-CIPPOffboardingJob'
                 }
-                Add-CIPPScheduledTask -Task $taskObject -hidden $false
-            } else {
-                Invoke-CIPPOffboardingJob -Username $Username -TenantFilter $Tenantfilter -Options $Request.body -APIName $APIName -ExecutingUser $request.headers.'x-ms-client-principal'
+                Parameters    = [pscustomobject]@{
+                    Username     = $Username
+                    APIName      = 'Scheduled Offboarding'
+                    options      = $OffboardingOptions
+                    RunScheduled = $true
+                }
+                PostExecution = @{
+                    Webhook = [bool]$Request.Body.PostExecution.webhook
+                    Email   = [bool]$Request.Body.PostExecution.email
+                    PSA     = [bool]$Request.Body.PostExecution.psa
+                }
+                Reference     = $Request.Body.reference
             }
-            $StatusCode = [HttpStatusCode]::OK
-
+            $Params = @{
+                Task    = $taskObject
+                hidden  = $false
+                Headers = $Headers
+            }
+            if ($Request.Body.Scheduled.enabled) {
+                $taskObject | Add-Member -NotePropertyName ScheduledTime -NotePropertyValue $Request.Body.Scheduled.date
+            } else {
+                $Params.RunNow = $true
+            }
+            Add-CIPPScheduledTask @Params
         } catch {
             $StatusCode = [HttpStatusCode]::Forbidden
-            $body = $_.Exception.message
+            $_.Exception.message
         }
     }
-    $body = [pscustomobject]@{'Results' = @($results) }
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    $body = [pscustomobject]@{'Results' = @($Results) }
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $Body
         })
