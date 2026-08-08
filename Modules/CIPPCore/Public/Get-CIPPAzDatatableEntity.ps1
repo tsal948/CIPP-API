@@ -1,4 +1,17 @@
 function Get-CIPPAzDataTableEntity {
+    <#
+    .FUNCTIONALITY
+    Internal
+    .SYNOPSIS
+    Gets entities from an Azure Table, reassembling entities that were split for size.
+    .DESCRIPTION
+    Thin wrapper around Get-AzDataTableLargeEntity (AzBobbyTables >= 3.6.2), which
+    natively merges rows that were split across multiple properties or rows because
+    they exceeded the table service size limits.
+
+    Kept as a wrapper for backward compatibility with existing call sites and to
+    default MaxRetries to 3 for throttled requests.
+    #>
     [CmdletBinding()]
     param(
         $Context,
@@ -7,23 +20,10 @@ function Get-CIPPAzDataTableEntity {
         $First,
         $Skip,
         $Sort,
-        $Count 
+        [switch]$Count,
+        [int]$MaxRetries = 3
     )
-    $Results = Get-AzDataTableEntity @PSBoundParameters
-    $Results = $Results | ForEach-Object {
-        $entity = $_
-        if ($entity.SplitOverProps) {
-            $splitInfo = $entity.SplitOverProps | ConvertFrom-Json
-            $mergedData = -join ($splitInfo.SplitHeaders | ForEach-Object { $entity.$_ })
-            $entity | Add-Member -NotePropertyName $splitInfo.OriginalHeader -NotePropertyValue $mergedData -Force
-            $propsToRemove = $splitInfo.SplitHeaders + "SplitOverProps"
-            $entity = $entity | Select-Object * -ExcludeProperty $propsToRemove
-            $entity 
-        }
-        else {
-            $entity  
-        }
-    }
-    
-    return $Results
+
+    $PSBoundParameters['MaxRetries'] = $MaxRetries
+    Get-AzDataTableLargeEntity @PSBoundParameters
 }

@@ -2,28 +2,33 @@ function Set-CIPPMailboxAccess {
     [CmdletBinding()]
     param (
         $userid,
-        $AccessUser,
+        [array]$AccessUser, # Can be single value or array of users
         [bool]$Automap,
         $TenantFilter,
-        $APIName = "Manage Shared Mailbox Access",
-        $ExecutingUser,
-        [array]$AccessRights
+        $APIName = 'Manage Shared Mailbox Access',
+        $Headers,
+        [array]$AccessRights # Retained for caller compatibility; this helper grants FullAccess
     )
 
-    try {
-        $permissions = New-ExoRequest -tenantid $TenantFilter -cmdlet "Add-MailboxPermission" -cmdParams @{Identity = $userid; user = $AccessUser; automapping = $Automap; accessRights = $AccessRights; InheritanceType = "all" } -Anchor $userid
-        
-        if ($Automap) {
-            Write-LogMessage -user $ExecutingUser -API $APIName -message "Gave $AccessRights permissions to $($AccessUser) on $($userid) with automapping" -Sev "Info" -tenant $TenantFilter
-            return "added $($AccessUser) to $($userid) Shared Mailbox with automapping, with the following permissions: $AccessRights"
-        } 
-        else {
-            Write-LogMessage -user $ExecutingUser -API $APIName -message "Gave $AccessRights permissions to $($AccessUser) on $($userid) without automapping" -Sev "Info" -tenant $TenantFilter
-            return "added $($AccessUser) to $($userid) Shared Mailbox without automapping, with the following permissions: $AccessRights"
-        }
+    # Ensure AccessUser is always an array
+    if ($AccessUser -isnot [array]) {
+        $AccessUser = @($AccessUser)
     }
-    catch {
-        Write-LogMessage -user $ExecutingUser -API $APIName -message "Could not add mailbox permissions for $($AccessUser) on $($userid)" -Sev "Error" -tenant $TenantFilter
-        return "Could not add shared mailbox permissions for $($userid). Error: $($_.Exception.Message)"
+
+    # Extract values if objects with .value property (from frontend)
+    $AccessUser = $AccessUser | ForEach-Object {
+        if ($_ -is [PSCustomObject] -and $_.value) { $_.value } else { $_ }
     }
+
+    $Results = [system.collections.generic.list[string]]::new()
+
+    # Delegate each grant to Set-CIPPMailboxPermission so the permission-level -> EXO cmdlet mapping,
+    # logging, cache sync, and error handling all live in one place. This helper grants FullAccess.
+    foreach ($User in $AccessUser) {
+        $Results.Add(
+            (Set-CIPPMailboxPermission -UserId $userid -AccessUser $User -PermissionLevel 'FullAccess' -Action 'Add' -AutoMap $Automap -TenantFilter $TenantFilter -APIName $APIName -Headers $Headers)
+        )
+    }
+
+    return $Results
 }
