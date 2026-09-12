@@ -1,0 +1,33 @@
+function Get-HaloTicketType {
+    <#
+    .SYNOPSIS
+        Get Halo Ticket Type
+    .DESCRIPTION
+        Get Halo Ticket Type
+    .EXAMPLE
+        Get-HaloTicketType
+
+    #>
+    [CmdletBinding()]
+    param ()
+    $Table = Get-CIPPTable -TableName Extensionsconfig
+    try {
+        $Configuration = ((Get-CIPPAzDataTableEntity @Table).config | ConvertFrom-Json -ea stop).HaloPSA
+        $Token = Get-HaloToken -configuration $Configuration
+        $UserAgent = Get-CippUserAgent
+
+        # Invoke-RestMethod emits a top-level JSON array as one Object[] without enumerating it,
+        # so returning it directly makes @(Get-HaloTicketType) a nested array. Writing the
+        # variable enumerates the rows.
+        $TicketTypes = Invoke-RestMethod -UserAgent $UserAgent -Uri "$($Configuration.ResourceURL)/TicketType?showall=true" -ContentType 'application/json' -Method GET -Headers @{Authorization = "Bearer $($Token.access_token)" }
+        $TicketTypes
+    } catch {
+        $Message = if ($_.ErrorDetails.Message) {
+            Get-NormalizedError -Message $_.ErrorDetails.Message
+        } else {
+            $_.Exception.message
+        }
+        @(@{name = "Could not get HaloPSA Ticket Types, error: $Message"; id = '' })
+    }
+}
+
