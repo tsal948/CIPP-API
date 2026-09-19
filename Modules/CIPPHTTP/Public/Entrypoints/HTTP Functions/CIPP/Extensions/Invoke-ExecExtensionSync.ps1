@@ -1,0 +1,123 @@
+Function Invoke-ExecExtensionSync {
+    <#
+    .FUNCTIONALITY
+        Entrypoint
+    .ROLE
+        CIPP.Extension.ReadWrite
+    #>
+    [CmdletBinding()]
+    param($Request, $TriggerMetadata)
+    switch ($Request.Query.Extension) {
+        'Gradient' {
+            try {
+                Write-LogMessage -API 'Scheduler_Billing' -tenant 'none' -message 'Starting billing processing.' -sev Info
+                $Table = Get-CIPPTable -TableName Extensionsconfig
+                $Configuration = (Get-CIPPAzDataTableEntity @Table).config | ConvertFrom-Json -Depth 10
+
+                foreach ($ConfigItem in $Configuration.psobject.properties.name) {
+                    switch ($ConfigItem) {
+                        'Gradient' {
+                            If ($Configuration.Gradient.enabled -and $Configuration.Gradient.BillingEnabled) {
+                                # Queue the sync function for immediate execution
+                                Add-CippQueueMessage -Cmdlet 'New-GradientServiceSyncRun' -Parameters @{}
+                                $Results = [pscustomobject]@{'Results' = 'Successfully queued Gradient Sync' }
+                            }
+                        }
+                    }
+                }
+            } catch {
+                $Results = [pscustomobject]@{'Results' = "Could not start Gradient Sync: $($_.Exception.Message)" }
+
+                Write-LogMessage -API 'Scheduler_Billing' -tenant 'none' -message "Could not start billing processing $($_.Exception.Message)" -sev Error
+            }
+        }
+
+        'NinjaOne' {
+            try {
+                $Table = Get-CIPPTable -TableName NinjaOneSettings
+
+                $CIPPMapping = Get-CIPPTable -TableName CippMapping
+                $Filter = "PartitionKey eq 'NinjaOneMapping'"
+                $TenantsToProcess = Get-AzDataTableEntity @CIPPMapping -Filter $Filter | Where-Object { $Null -ne $_.IntegrationId -and $_.IntegrationId -ne '' }
+
+                if ($Request.Query.TenantID) {
+                    $Tenant = $TenantsToProcess | Where-Object { $_.RowKey -eq $Request.Query.TenantID }
+                    if (($Tenant | Measure-Object).count -eq 1) {
+                        $Batch = [PSCustomObject]@{
+                            'NinjaAction'  = 'SyncTenant'
+                            'MappedTenant' = $Tenant
+                            'FunctionName' = 'NinjaOneQueue'
+                        }
+                        $InputObject = [PSCustomObject]@{
+                            OrchestratorName = 'NinjaOneOrchestrator'
+                            Batch            = @($Batch)
+                        }
+                        #Write-Host ($InputObject | ConvertTo-Json)
+                        $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
+
+                        $SyncTenantFilter = if ($Request.Query.TenantFilter) { $Request.Query.TenantFilter } else { $Tenant.RowKey }
+                        Write-LogMessage -API 'NinjaOneSync' -tenant $SyncTenantFilter -message "On-demand NinjaOne Synchronization queued for $($Tenant.IntegrationName)" -Sev 'Info' -Headers $Request.Headers
+
+                        $Results = [pscustomobject]@{'Results' = "NinjaOne Synchronization Queued for $($Tenant.IntegrationName)" }
+                    } else {
+                        $Results = [pscustomobject]@{'Results' = 'Tenant was not found.' }
+                    }
+
+                } else {
+                    $Batch = [PSCustomObject]@{
+                        'NinjaAction'  = 'SyncTenants'
+                        'FunctionName' = 'NinjaOneQueue'
+                    }
+                    $InputObject = [PSCustomObject]@{
+                        OrchestratorName = 'NinjaOneOrchestrator'
+                        Batch            = @($Batch)
+                    }
+                    #Write-Host ($InputObject | ConvertTo-Json)
+                    $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
+                    Write-Host "Started permissions orchestration with ID = '$InstanceId'"
+                    $Results = [pscustomobject]@{'Results' = "NinjaOne Synchronization Queuing $(($TenantsToProcess | Measure-Object).count) Tenants" }
+
+                }
+            } catch {
+                $Results = [pscustomobject]@{'Results' = "Could not start NinjaOne Sync: $($_.Exception.Message)" }
+                Write-LogMessage -API 'Scheduler_Billing' -tenant 'none' -message "Could not start NinjaOne Sync $($_.Exception.Message)" -sev Error
+            }
+        }
+        'Hudu' {
+            try {
+                if ($Request.Query.TenantID) {
+                    $CIPPMapping = Get-CIPPTable -TableName CippMapping
+                    $Filter = "PartitionKey eq 'HuduMapping'"
+                    $Mapping = Get-CIPPAzDataTableEntity @CIPPMapping -Filter $Filter | Where-Object { $_.RowKey -eq $Request.Query.TenantID -and $Null -ne $_.IntegrationId -and $_.IntegrationId -ne '' }
+                    $Tenant = Get-Tenants -IncludeErrors | Where-Object { $_.customerId -eq $Request.Query.TenantID }
+
+                    if (($Mapping | Measure-Object).count -eq 1 -and $Tenant) {
+                        # Queue the sync function for immediate execution
+                        $null = Add-CippQueueMessage -Cmdlet 'Push-CippExtensionData' -Parameters @{
+                            TenantFilter = $Tenant.defaultDomainName
+                            Extension    = 'Hudu'
+                        }
+                        Write-LogMessage -API 'HuduSync' -tenant $Tenant.defaultDomainName -message "On-demand Hudu Synchronization queued for $($Mapping.IntegrationName)" -Sev 'Info' -Headers $Request.Headers
+                        $Results = [pscustomobject]@{'Results' = "Hudu Synchronization Queued for $($Mapping.IntegrationName)" }
+                    } else {
+                        $Results = [pscustomobject]@{'Results' = 'Tenant was not found.' }
+                    }
+                } else {
+                    Register-CIPPExtensionScheduledTasks -Reschedule -Extensions 'Hudu'
+                    $Results = [pscustomobject]@{'Results' = 'Extension sync tasks have been rescheduled and will start within 15 minutes' }
+                }
+            } catch {
+                $Results = [pscustomobject]@{'Results' = "Could not start Hudu Sync: $($_.Exception.Message)" }
+                Write-LogMessage -API 'HuduSync' -tenant 'none' -message "Could not start Hudu Sync $($_.Exception.Message)" -sev Error
+            }
+        }
+
+    }
+
+
+    return ([HttpResponseContext]@{
+            StatusCode = [HttpStatusCode]::OK
+            Body       = $Results
+        })
+
+}
