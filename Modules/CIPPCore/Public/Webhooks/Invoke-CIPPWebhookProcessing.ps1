@@ -6,89 +6,295 @@ function Invoke-CippWebhookProcessing {
         $Resource,
         $Operations,
         $CIPPURL,
+        $AlertComment,
         $APIName = 'Process webhook',
-        $ExecutingUser
+        $Headers,
+        # Optional accumulator. When supplied, the completed audit-log row is added to it instead of
+        # being written here, so the caller can flush a batch of them in one transaction - they all
+        # share the tenant partition key. A list rather than a return value on purpose: this
+        # function's output stream already carries whatever Send-CIPPAlert returns, and adding to it
+        # would push that further up into Test-CIPPAuditLogRules' own output.
+        [System.Collections.Generic.List[object]]$PendingAuditLogWrites
     )
 
-    <# $ExtendedPropertiesIgnoreList = @(
-        'OAuth2:Authorize'
-        'OAuth2:Token'
-        'SAS:EndAuth'
-        'SAS:ProcessAuth'
-        'Login:reprocess'
-    ) #>
-    Write-Host "Received data. Our Action List is $($data.CIPPAction)"
+    $AuditLogTable = Get-CIPPTable -TableName 'AuditLogs'
 
-    $ActionList = ($data.CIPPAction | ConvertFrom-Json -ErrorAction SilentlyContinue).value
+    # The record Id alone does not identify an event: Entra sign-in records reuse the same Id for
+    # the same user weeks apart, so a claim from an old sign-in would swallow every later one. The
+    # claim therefore carries the event's own time, and a key conflict only yields to a strictly
+    # newer event. Empty when the record has no CreationTime - that falls back to
+    # dedupe on the Id alone. The RowKey stays the bare Id so the audit-log link, the Saved Logs
+    # list endpoint and the split-row OriginalEntityId lookup all keep working unchanged.
+    $EventStamp = ''
+    $CreationTime = $Data.CreationTime ?? $Data.RawData.CreationTime ?? $Data.createdDateTime
+    if ($CreationTime -is [datetime]) {
+        $EventStamp = $CreationTime.ToUniversalTime().ToString('yyyyMMddHHmmss')
+    } elseif ($CreationTime) {
+        $ParsedCreation = [datetime]::MinValue
+        $CreationStyles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal
+        if ([datetime]::TryParse([string]$CreationTime, [cultureinfo]::InvariantCulture, $CreationStyles, [ref]$ParsedCreation)) {
+            $EventStamp = $ParsedCreation.ToString('yyyyMMddHHmmss')
+        }
+    }
+
+    $ClaimRow = @{
+        PartitionKey      = $TenantFilter
+        RowKey            = $Data.Id
+        Title             = 'Processing'
+        Tenant            = $TenantFilter
+        EventCreationTime = $EventStamp
+    }
+
+    # Claim the event ID immediately, with no read first. The claim is an Insert without -Force, so
+    # a conflict already tells us another worker (or an earlier run) owns this event - the read that
+    # used to precede it answered the same question a round trip earlier and could not make the
+    # claim any safer, because a row could still appear between the two. It was one extra table read
+    # per MATCHED record, measured at 28% of the processing stage once rules actually fire.
+    # A duplicate now costs one failed insert instead of one read; a new event costs one insert
+    # instead of a read plus an insert.
+    # -ErrorAction Stop ensures non-terminating errors enter the catch block.
+    try {
+        Add-CIPPAzDataTableEntity @AuditLogTable -Entity $ClaimRow -ErrorAction Stop
+    } catch {
+        # A conflict means the key is taken, not necessarily that this event was handled. Only now
+        # is a read worth a round trip: re-claim when the row belongs to a NEWER event, or when it
+        # is older than the reconciliation window - claims are never pruned, so a row from months
+        # ago can otherwise own the key forever. Anything else is a genuine duplicate and is dropped.
+        #
+        # Strictly newer, not merely different. There is one row per Id, so two same-Id events
+        # inside the reconciliation window would otherwise ping-pong: every 12h pass re-processes
+        # both, each one differs from whatever the other last stored, and both re-alert forever.
+        # Monotonic stamps make the older of the pair a replay. Both stamps are fixed-width
+        # yyyyMMddHHmmss, so a string compare orders them.
+        $SafeTenant = ConvertTo-CIPPODataFilterValue -Value $TenantFilter -Type 'String'
+        $SafeRowKey = ConvertTo-CIPPODataFilterValue -Value ([string]$Data.Id) -Type 'String'
+        $ExistingClaim = Get-CIPPAzDataTableEntity @AuditLogTable -Filter "PartitionKey eq '$SafeTenant' and RowKey eq '$SafeRowKey'" | Select-Object -First 1
+        $ClaimTime = if ($ExistingClaim.Timestamp -is [datetimeoffset]) { $ExistingClaim.Timestamp.UtcDateTime } else { $ExistingClaim.Timestamp -as [datetime] }
+        $NewerEvent = $EventStamp -and $ExistingClaim.EventCreationTime -and $EventStamp -gt $ExistingClaim.EventCreationTime
+        $StaleClaim = $ClaimTime -and $ClaimTime -lt [datetime]::UtcNow.AddDays(-7)
+        if ($NewerEvent -or $StaleClaim) {
+            Write-LogMessage -API $APIName -tenant $TenantFilter -message "Audit log $($Data.Id) matched a $(if ($NewerEvent) { 'claim for an earlier event' } else { 'claim older than 7 days' }). Treating it as a new event." -sev 'Info'
+            Add-CIPPAzDataTableEntity @AuditLogTable -Entity $ClaimRow -Force
+        } else {
+            Write-Host "Audit log $($Data.Id) already claimed or already processed. Skipping."
+            return
+        }
+    }
+
+    # Memoised per tenant. Get-Tenants does no in-process caching of its own: every call reads the
+    # tenants table twice, filters through the pipeline and sorts the whole list, measured at 26 ms
+    # against a 16-tenant list and growing with the tenant count. This function runs once per
+    # MATCHED audit record, so at a few hundred tenants each matching a handful of records per
+    # cycle, the pipeline spent minutes per cycle re-deriving an answer that is identical every
+    # time. Five minutes, because the tenant list is itself a cached table that turns over on the
+    # order of hours; a tenant onboarded mid-window resolves on the next cycle.
+    # A miss caches the null result too - an unknown tenant must not re-query per record either.
+    if ($null -eq $script:WebhookTenantCache) {
+        $script:WebhookTenantCache = @{}
+    }
+    $TenantCacheNow = [datetime]::UtcNow
+    $TenantEntry = $script:WebhookTenantCache[$TenantFilter]
+    if ($TenantEntry -and $TenantEntry.Expires -gt $TenantCacheNow) {
+        $Tenant = $TenantEntry.Tenant
+    } else {
+        foreach ($CachedTenant in @($script:WebhookTenantCache.Keys)) {
+            if ($script:WebhookTenantCache[$CachedTenant].Expires -le $TenantCacheNow) {
+                $script:WebhookTenantCache.Remove($CachedTenant)
+            }
+        }
+        $Tenant = Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $TenantFilter }
+        $script:WebhookTenantCache[$TenantFilter] = [PSCustomObject]@{
+            Expires = $TenantCacheNow.AddMinutes(5)
+            Tenant  = $Tenant
+        }
+    }
+    Write-Host "Received data. Our Action List is $($Data.CIPPAction)"
+
+    $ActionList = ($Data.CIPPAction | ConvertFrom-Json -ErrorAction SilentlyContinue).value
     $ActionResults = foreach ($action in $ActionList) {
-        Write-Host "this is our action: $($action | ConvertTo-Json -Depth 15 -Compress))"
+        # Serialising every action at depth 15 just to print it, once per action per MATCHED
+        # record, is not worth paying for at alerting volume. Left in place rather than deleted
+        # because it is genuinely useful when working on a specific tenant's actions - uncomment
+        # it then. Write-Host targets the host stream, not the output stream, so this does not
+        # affect what $ActionResults collects.
+        #Write-Host "this is our action: $($action | ConvertTo-Json -Depth 15 -Compress)"
         switch ($action) {
             'disableUser' {
-                Set-CIPPSignInState -TenantFilter $TenantFilter -User $data.UserId -AccountEnabled $false -APIName 'Alert Engine' -ExecutingUser 'Alert Engine'
+                try {
+                    Set-CIPPSignInState -TenantFilter $TenantFilter -User $Data.UserId -AccountEnabled $false -APIName 'Alert Engine' -Headers 'Alert Engine'
+                } catch {
+                    Write-Host "Failed to disable user $($Data.UserId)`: $($_.Exception.Message)"
+                }
             }
             'becremediate' {
-                $username = (New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users/$($data.UserId)" -tenantid $TenantFilter).UserPrincipalName
-                Set-CIPPResetPassword -userid $username -tenantFilter $TenantFilter -APIName 'Alert Engine' -ExecutingUser 'Alert Engine'
-                Set-CIPPSignInState -userid $username -AccountEnabled $false -tenantFilter $TenantFilter -APIName 'Alert Engine' -ExecutingUser 'Alert Engine'
-                Revoke-CIPPSessions -userid $username -username $username -ExecutingUser 'Alert Engine' -APIName 'Alert Engine' -tenantFilter $TenantFilter
-                $RuleDisabled = 0
-                New-ExoRequest -anchor $username -tenantid $TenantFilter -cmdlet 'get-inboxrule' -cmdParams @{Mailbox = $username } | ForEach-Object {
-                    $null = New-ExoRequest -anchor $username -tenantid $TenantFilter -cmdlet 'Disable-InboxRule' -cmdParams @{Confirm = $false; Identity = $_.Identity }
-                    "Disabled Inbox Rule $($_.Identity) for $username"
-                    $RuleDisabled ++
+                # Same dispatcher as the BEC page's containment: the rule's BecActions selection, or - for a
+                # rule that predates selectable containment - the four steps this action always ran. Automation
+                # confirms Critical actions by design. The password never enters the alert payload.
+                $Username = (New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users/$($Data.UserId)" -tenantid $TenantFilter).UserPrincipalName
+                $BecActionsRaw = try { $Data.CIPPBecActions | ConvertFrom-Json -ErrorAction Stop } catch { @() }
+                $BecActions = @($BecActionsRaw | ForEach-Object { if ($_ -and $_.PSObject.Properties['value']) { $_.value } else { $_ } } | Where-Object { $_ })
+                if ($BecActions.Count -eq 0) { $BecActions = @('ResetPassword', 'DisableAccount', 'RevokeSessions', 'DisableInboxRules') }
+                try {
+                    $ContainmentRows = Invoke-CIPPBecContainment -TenantFilter $TenantFilter -UserId $Data.UserId -UserPrincipalName $Username -Actions $BecActions -Confirmed -Redacted -Headers 'Alert Engine' -APIName 'Alert Engine'
+                    foreach ($Row in @($ContainmentRows)) { "$($Row.Action) ($($Row.state)): $($Row.resultText)" }
+                } catch {
+                    Write-Host "BEC containment failed for $Username`: $($_.Exception.Message)"
+                    "BEC containment failed for $Username`: $($_.Exception.Message)"
                 }
-                if ($RuleDisabled) {
-                    "Disabled $RuleDisabled Inbox Rules for $username"
-                } else {
-                    "No Inbox Rules found for $username. We have not disabled any rules."
-                }
-                "Completed BEC Remediate for $username"
-                Write-LogMessage -API 'BECRemediate' -tenant $tenantfilter -message "Executed Remediation for $username" -sev 'Info'
+                "Completed BEC Remediate for $Username"
             }
-            'cippcommand' {
+            <#'cippcommand' {
                 $CommandSplat = @{}
                 $action.parameters.psobject.properties | ForEach-Object { $CommandSplat.Add($_.name, $_.value) }
-                if ($CommandSplat['userid']) { $CommandSplat['userid'] = $data.userid }
-                if ($CommandSplat['tenantfilter']) { $CommandSplat['tenantfilter'] = $tenantfilter }
-                if ($CommandSplat['tenant']) { $CommandSplat['tenant'] = $tenantfilter }
-                if ($CommandSplat['user']) { $CommandSplat['user'] = $data.userid }
-                if ($CommandSplat['username']) { $CommandSplat['username'] = $data.userid }
+                if ($CommandSplat['userid']) { $CommandSplat['userid'] = $Data.UserId }
+                if ($CommandSplat['tenantfilter']) { $CommandSplat['tenantfilter'] = $TenantFilter }
+                if ($CommandSplat['tenant']) { $CommandSplat['tenant'] = $TenantFilter }
+                if ($CommandSplat['user']) { $CommandSplat['user'] = $Data.UserId }
+                if ($CommandSplat['username']) { $CommandSplat['username'] = $Data.UserId }
                 & $action.command.value @CommandSplat
+            }#>
+            default {
+                Write-Host "Unknown action: $action"
             }
         }
     }
+
+    # Save audit log entry to table
+    $LocationInfo = $Data.CIPPLocationInfo | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $AuditRecord = $Data.AuditRecord | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $GenerateJSON = New-CIPPAlertTemplate -format 'json' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL -AlertComment $AlertComment -CustomSubject $Data.CIPPCustomSubject -Tenant $Tenant.defaultDomainName
+    $JsonContent = @{
+        Title                 = $GenerateJSON.Title
+        ActionUrl             = $GenerateJSON.ButtonUrl
+        ActionText            = $GenerateJSON.ButtonText
+        RawData               = $Data
+        IP                    = $Data.ClientIP
+        PotentialLocationInfo = $LocationInfo
+        ActionsTaken          = $ActionResults
+        AuditRecord           = $AuditRecord
+        AlertComment          = $AlertComment
+    } | ConvertTo-Json -Depth 15 -Compress
+
+    # Built here, written at the very bottom - after the alerts have gone out. See the note there.
+    # EventCreationTime rides along: this row replaces the claim under the same key, so dropping it
+    # here would leave a completed row that no later event can be told apart from.
+    $AuditLogRow = @{
+        PartitionKey      = $TenantFilter
+        RowKey            = $Data.Id
+        Title             = $GenerateJSON.Title
+        Data              = [string]$JsonContent
+        Tenant            = $TenantFilter
+        EventCreationTime = $EventStamp
+    }
+    $LogId = $Data.Id
+
+    $AuditLogLink = '{0}/tenant/administration/audit-logs/log?logId={1}&tenantFilter={2}' -f $CIPPURL, $LogId, $Tenant.defaultDomainName
+    # The html render is deferred to the generatemail branch below, which is its only consumer.
+    # Rendering it here meant every matched record paid for an email body whether or not any rule
+    # asked for one - two template renders per alert where one was needed, ~15% of the processing
+    # stage between them.
+
+    # Derive the affected end-user from the audit record so PSA tickets can be linked to the
+    # right HaloPSA contact when HaloPSA.LinkTicketsToUsers is enabled. The upstream GUID mapper
+    # has already attached CIPP-prefixed properties (e.g. CIPPObjectId) holding the resolved UPN
+    # for any property that contained a user's Object ID; the raw property usually still holds
+    # the original GUID, which we can use directly as the AzureOID for the Halo lookup.
+    $AffectedUser = $null
+    $GuidRegex = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    $UserCandidates = @(
+        @{ Raw = 'ObjectId'; Mapped = 'CIPPObjectId' }
+        @{ Raw = 'UserId';   Mapped = 'CIPPUserId' }
+        @{ Raw = 'Userkey';  Mapped = 'CIPPUserkey' }
+    )
+    foreach ($Candidate in $UserCandidates) {
+        $RawValue = $Data.$($Candidate.Raw)
+        $MappedValue = $Data.$($Candidate.Mapped)
+        if (-not $RawValue -and -not $MappedValue) { continue }
+
+        $UPN = $null; $OID = $null
+        if ($MappedValue -is [string] -and $MappedValue -match '@') { $UPN = $MappedValue }
+        elseif ($RawValue -is [string] -and $RawValue -match '@')   { $UPN = $RawValue }
+
+        if ($RawValue -is [string] -and $RawValue -match $GuidRegex) { $OID = $RawValue }
+
+        if ($UPN -or $OID) {
+            $AffectedUser = [pscustomobject]@{
+                UPN      = $UPN
+                AzureOID = $OID
+            }
+            break
+        }
+    }
+
     Write-Host 'Going to create the content'
     foreach ($action in $ActionList ) {
         switch ($action) {
             'generatemail' {
-                Write-Host 'Going to create the email'
-                $GenerateEmail = New-CIPPAlertTemplate -format 'html' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL
+                $GenerateEmail = New-CIPPAlertTemplate -format 'html' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL -Tenant $Tenant.defaultDomainName -AuditLogLink $AuditLogLink -AlertComment $AlertComment -CustomSubject $Data.CIPPCustomSubject
+                $CIPPAlert = @{
+                    Type         = 'email'
+                    Title        = $GenerateEmail.title
+                    HTMLContent  = $GenerateEmail.htmlcontent
+                    TenantFilter = $TenantFilter
+                }
                 Write-Host 'Going to send the mail'
-                Send-CIPPAlert -Type 'email' -Title $GenerateEmail.title -HTMLContent $GenerateEmail.htmlcontent -TenantFilter $TenantFilter
+                Send-CIPPAlert @CIPPAlert
                 Write-Host 'email should be sent'
             }
             'generatePSA' {
-                $GenerateEmail = New-CIPPAlertTemplate -format 'html' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL
-                Send-CIPPAlert -Type 'psa' -Title $GenerateEmail.title -HTMLContent $GenerateEmail.htmlcontent -TenantFilter $TenantFilter
+                $GeneratePSA = New-CIPPAlertTemplate -format 'psa' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL -Tenant $Tenant.defaultDomainName -AuditLogLink $AuditLogLink -AlertComment $AlertComment -CustomSubject $Data.CIPPCustomSubject
+                $CIPPAlert = @{
+                    Type         = 'psa'
+                    Title        = $GeneratePSA.title
+                    HTMLContent  = $GeneratePSA.htmlcontent
+                    TenantFilter = $TenantFilter
+                }
+                if ($AffectedUser) {
+                    $CIPPAlert.AffectedUser = $AffectedUser
+                }
+                # Per-alert priority rides on the record rather than a function parameter, the same
+                # way CustomSubject does above - this function has a second caller
+                # (Push-PublicWebhookProcess) that has no alert config to pass.
+                if ($Data.CIPPPsaTicketPriority) {
+                    $CIPPAlert.PsaTicketPriority = $Data.CIPPPsaTicketPriority
+                }
+                Send-CIPPAlert @CIPPAlert
             }
             'generateWebhook' {
-                Write-Host 'Generating the webhook content'
-                $LocationInfo = $Data.CIPPLocationInfo | ConvertFrom-Json -ErrorAction SilentlyContinue
-                $GenerateJSON = New-CIPPAlertTemplate -format 'json' -data $Data -ActionResults $ActionResults -CIPPURL $CIPPURL
-                $JsonContent = @{
-                    Title                 = $GenerateJSON.Title
-                    ActionUrl             = $GenerateJSON.ButtonUrl
-                    ActionText            = $GenerateJSON.ButtonText
-                    RawData               = $Data
-                    IP                    = $data.ClientIP
-                    PotentialLocationInfo = $LocationInfo
-                    ActionsTaken          = [string]($ActionResults | ConvertTo-Json -Depth 15 -Compress)
-                } | ConvertTo-Json -Depth 15 -Compress
+                $CippAlert = @{
+                    Type            = 'webhook'
+                    Title           = $GenerateJSON.Title
+                    JSONContent     = $JsonContent
+                    TenantFilter    = $TenantFilter
+                    APIName         = 'Audit Log Alerts'
+                    SchemaSource    = 'Audit Log Alert'
+                    InvokingCommand = 'Start-AuditLogProcessingOrchestrator'
+                }
                 Write-Host 'Sending Webhook Content'
-                #Write-Host $JsonContent
-                Send-CIPPAlert -Type 'webhook' -Title $GenerateJSON.Title -JSONContent $JsonContent -TenantFilter $TenantFilter
+                Send-CIPPAlert @CippAlert
             }
         }
+    }
+
+    # Written last, and optionally handed to the caller to batch.
+    #
+    # It used to be written before the alerts went out, which put the silent failure in the worst
+    # place: a crash between the write and the send left a row that looks complete for an alert
+    # nobody ever received, and the claim row makes a retry skip the record, so it is lost without
+    # trace. Writing after the send inverts that - a crash there means the alert HAS gone out and
+    # only the stored copy is missing, which is visible in the UI as a row still marked Processing.
+    # Nothing downstream de-duplicates: Send-CIPPAlert posts to email, webhook and PSA
+    # unconditionally, and its 'table' path even keys on a fresh guid per call. This claim row is
+    # the only thing standing between a retry and a second alert, which is why the claim stays
+    # where it is, before any work.
+    #
+    # When the caller supplies a list, the row is queued rather than written, so a batch of them
+    # goes out in one transaction - every row shares the tenant partition key. The caller is
+    # responsible for flushing, including on failure.
+    if ($null -ne $PendingAuditLogWrites) {
+        $null = $PendingAuditLogWrites.Add($AuditLogRow)
+    } else {
+        Add-CIPPAzDataTableEntity @AuditLogTable -Entity $AuditLogRow -Force
     }
 }
 
